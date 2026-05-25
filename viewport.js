@@ -92,6 +92,14 @@ export class ViewportManager {
         return { cellX, cellY, wx, wy };
     }
 
+    getVisibleCellBounds(worldWidth, worldHeight, cellSize) {
+        const minX = Math.max(0, Math.floor(((0 - this.width / 2) / this.camera.zoom + this.camera.x) / cellSize) - 1);
+        const minY = Math.max(0, Math.floor(((0 - this.height / 2) / this.camera.zoom + this.camera.y) / cellSize) - 1);
+        const maxX = Math.min(worldWidth - 1, Math.ceil(((this.width - this.width / 2) / this.camera.zoom + this.camera.x) / cellSize) + 1);
+        const maxY = Math.min(worldHeight - 1, Math.ceil(((this.height - this.height / 2) / this.camera.zoom + this.camera.y) / cellSize) + 1);
+        return { minX, maxX, minY, maxY };
+    }
+
     /**
      * Prepares Canvas Context with the Camera Matrix.
      */

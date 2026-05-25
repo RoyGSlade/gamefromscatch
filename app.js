@@ -19,6 +19,8 @@ const poiDebugToggle = document.getElementById('poiDebugToggle');
 const districtsToggle = document.getElementById('districtsToggle');
 const productionToggle = document.getElementById('productionToggle');
 const jobsToggle = document.getElementById('jobsToggle');
+const districtLabelsToggle = document.getElementById('districtLabelsToggle');
+const tokenRoutesToggle = document.getElementById('tokenRoutesToggle');
 
 // Status Bar Elements
 const lodText = document.getElementById('lodValue');
@@ -156,6 +158,10 @@ function handleHover(mx, my) {
     updateStatusBar(cellX, cellY);
 
     hoveredCity = null;
+    renderer.hoveredBuilding = null;
+    renderer.hoveredDistrict = null;
+    renderer.hoveredToken = null;
+    
     const threshold = 18 / renderer.viewport.camera.zoom;
 
     // Check if hovering over any settlements
@@ -168,7 +174,57 @@ function handleHover(mx, my) {
         }
     }
 
-    canvas.style.cursor = hoveredCity ? 'pointer' : 'grab';
+    // If zoomed in and not hovering a settlement, check details
+    if (!hoveredCity && renderer.viewport.camera.zoom >= 1.5 && world.settlement_layouts) {
+        // 1. Check if hovering a building
+        for (const layout of world.settlement_layouts) {
+            for (const bld of layout.buildings) {
+                if (cellX >= bld.x && cellX < bld.x + bld.width &&
+                    cellY >= bld.y && cellY < bld.y + bld.height) {
+                    renderer.hoveredBuilding = bld;
+                    break;
+                }
+            }
+            if (renderer.hoveredBuilding) break;
+        }
+
+        // 2. Check if hovering a district
+        if (!renderer.hoveredBuilding) {
+            const showDistricts = districtsToggle ? districtsToggle.checked : false;
+            if (showDistricts) {
+                for (const layout of world.settlement_layouts) {
+                    for (const dist of layout.districts) {
+                        if (Math.hypot(cellX - dist.x, cellY - dist.y) <= dist.radius) {
+                            renderer.hoveredDistrict = dist;
+                            break;
+                        }
+                    }
+                    if (renderer.hoveredDistrict) break;
+                }
+            }
+        }
+
+        // 3. Check if hovering a mobile token
+        if (!renderer.hoveredBuilding && !renderer.hoveredDistrict) {
+            for (const tok of world.mobile_tokens) {
+                const speed = tok.type === 'caravan' ? 0.08 : 0.15;
+                const index = Math.floor(renderer.animFrame * speed) % tok.route.length;
+                const p = tok.route[index] || { x: tok.x, y: tok.y };
+                
+                const tcx = p.x * renderer.cellSize + renderer.cellSize/2;
+                const tcy = p.y * renderer.cellSize + renderer.cellSize/2;
+                
+                // Hover threshold in world units
+                const dist = Math.hypot(wx - tcx, wy - tcy) * renderer.viewport.camera.zoom;
+                if (dist < 12) {
+                    renderer.hoveredToken = tok;
+                    break;
+                }
+            }
+        }
+    }
+
+    canvas.style.cursor = (hoveredCity || renderer.hoveredBuilding || renderer.hoveredDistrict || renderer.hoveredToken) ? 'pointer' : 'grab';
 }
 
 function handleClick(mx, my) {
@@ -313,6 +369,10 @@ function setupUIListeners() {
         refreshInspector();
     });
 
+    districtLabelsToggle.addEventListener('change', () => {
+        if (renderer) renderer.draw();
+    });
+
     productionToggle.addEventListener('change', () => {
         if (renderer) renderer.draw();
         refreshInspector();
@@ -321,6 +381,10 @@ function setupUIListeners() {
     jobsToggle.addEventListener('change', () => {
         if (renderer) renderer.draw();
         refreshInspector();
+    });
+
+    tokenRoutesToggle.addEventListener('change', () => {
+        if (renderer) renderer.draw();
     });
 
     searchInput.addEventListener('input', (e) => {
@@ -370,6 +434,11 @@ function inspectCity(settle) {
     inspectedType = 'settlement';
     inspectedData = settle;
     inspectedLayout = world.settlement_layouts ? world.settlement_layouts.find(l => l.settlement_id === settle.id) : null;
+    
+    if (renderer) {
+        renderer.selectedBuilding = null;
+        renderer.draw();
+    }
     
     const goodsStr = settle.resources.join(', ');
     const label = settle.type === 'town' ? 'Sovereign Town' : 'Industrial Outpost';
@@ -423,6 +492,11 @@ function inspectBuilding(bld, layout) {
     inspectedData = bld;
     inspectedLayout = layout;
     selectedCity = world.settlements.find(s => s.id === layout.settlement_id);
+    
+    if (renderer) {
+        renderer.selectedBuilding = bld;
+        renderer.draw();
+    }
     
     let html = `
         <h3 class="inspector-title">${bld.name}</h3>
@@ -522,6 +596,11 @@ function inspectDistrict(dist, layout) {
     inspectedData = dist;
     inspectedLayout = layout;
     selectedCity = world.settlements.find(s => s.id === layout.settlement_id);
+    
+    if (renderer) {
+        renderer.selectedBuilding = null;
+        renderer.draw();
+    }
     
     const formattedType = dist.type.replace("_", " ").toUpperCase();
     const buildingsInDistrict = layout.buildings.filter(b => b.district_id === dist.id);
@@ -623,6 +702,10 @@ function closeInspector() {
     inspectedType = null;
     inspectedData = null;
     inspectedLayout = null;
+    if (renderer) {
+        renderer.selectedBuilding = null;
+        renderer.draw();
+    }
     inspectorPanel.classList.remove('open');
     inspectorContent.innerHTML = `
         <div class="no-selection-msg">

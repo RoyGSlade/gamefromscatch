@@ -4,6 +4,7 @@ from .cell import CellSchema, CoordinateSchema
 from .settlement import SettlementSchema
 from .infrastructure import RoadSchema, BridgeSchema, POISchema, MobileTokenSchema
 from .resource import ResourceSchema
+from .settlement_layout import SettlementLayoutSchema
 
 class WorldResponse(BaseModel):
     seed: str
@@ -17,3 +18,4 @@ class WorldResponse(BaseModel):
     resources: List[ResourceSchema]
     pois: List[POISchema]
     mobile_tokens: List[MobileTokenSchema]
+    settlement_layouts: List[SettlementLayoutSchema]

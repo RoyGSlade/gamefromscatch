@@ -2,6 +2,7 @@ import heapq
 import numpy as np
 from typing import List, Dict, Tuple, Any
 from .noise import seed_from_string
+from .settlements import LAND_PREFIXES, LAND_SUFFIXES
 
 def get_travel_cost(
     fx: int, fy: int, tx: int, ty: int,
@@ -57,44 +58,34 @@ def astar(
 ) -> List[Dict[str, int]]:
     """
     Standard A* algorithm to find a deterministic path between two points.
+    If a land-only path is not found, runs a second-pass that permits ocean traversal with high penalty.
     """
     sx, sy = start
     ex, ey = end
     
-    # Priority queue holds (f_score, x, y)
+    # Pass 1: Land-only search
     pq = []
     heapq.heappush(pq, (0.0, sx, sy))
-    
-    # G scores map (x, y) to cost
     g_score = { (sx, sy): 0.0 }
-    
-    # Parent pointers for backtracking
     parents = {}
     
-    # 8-directional neighbors
     neighbors = [
         (-1, 0), (1, 0), (0, -1), (0, 1),
         (-1, -1), (1, -1), (-1, 1), (1, 1)
     ]
     
+    found = False
     while pq:
         _, cx, cy = heapq.heappop(pq)
         
         if cx == ex and cy == ey:
-            # Reconstruct path
-            path = []
-            curr = (ex, ey)
-            while curr in parents:
-                path.append({"x": curr[0], "y": curr[1]})
-                curr = parents[curr]
-            path.append({"x": sx, "y": sy})
-            path.reverse()
-            return path
+            found = True
+            break
             
         for dx, dy in neighbors:
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < width and 0 <= ny < height:
-                # Strictly forbid walking on ocean cells
+                # Strictly forbid walking on ocean cells in pass 1
                 if water_type[ny, nx] == "ocean":
                     continue
                 cost = get_travel_cost(cx, cy, nx, ny, elevation, biomes, water_type)
@@ -102,14 +93,59 @@ def astar(
                 
                 if (nx, ny) not in g_score or new_g < g_score[(nx, ny)]:
                     g_score[(nx, ny)] = new_g
-                    # Heuristic: Euclidean distance
                     h = np.hypot(nx - ex, ny - ey) * 1.5
                     f = new_g + h
                     heapq.heappush(pq, (f, nx, ny))
                     parents[(nx, ny)] = (cx, cy)
                     
-    # Fallback to direct line if A* fails
-    return [{"x": sx, "y": sy}, {"x": ex, "y": ey}]
+    if found:
+        path = []
+        curr = (ex, ey)
+        while curr in parents:
+            path.append({"x": int(curr[0]), "y": int(curr[1])})
+            curr = parents[curr]
+        path.append({"x": int(sx), "y": int(sy)})
+        path.reverse()
+        return path
+
+    # Pass 2: Relaxed search (permits ocean traversal at huge penalty)
+    pq = []
+    heapq.heappush(pq, (0.0, sx, sy))
+    g_score = { (sx, sy): 0.0 }
+    parents = {}
+    
+    while pq:
+        _, cx, cy = heapq.heappop(pq)
+        
+        if cx == ex and cy == ey:
+            path = []
+            curr = (ex, ey)
+            while curr in parents:
+                path.append({"x": int(curr[0]), "y": int(curr[1])})
+                curr = parents[curr]
+            path.append({"x": int(sx), "y": int(sy)})
+            path.reverse()
+            return path
+            
+        for dx, dy in neighbors:
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                # Allow ocean cells with a massive penalty
+                if water_type[ny, nx] == "ocean":
+                    cost = get_travel_cost(cx, cy, nx, ny, elevation, biomes, water_type) + 5000.0
+                else:
+                    cost = get_travel_cost(cx, cy, nx, ny, elevation, biomes, water_type)
+                new_g = g_score[(cx, cy)] + cost
+                
+                if (nx, ny) not in g_score or new_g < g_score[(nx, ny)]:
+                    g_score[(nx, ny)] = new_g
+                    h = np.hypot(nx - ex, ny - ey) * 1.5
+                    f = new_g + h
+                    heapq.heappush(pq, (f, nx, ny))
+                    parents[(nx, ny)] = (cx, cy)
+
+    # Absolute fallback: direct line
+    return [{"x": int(sx), "y": int(sy)}, {"x": int(ex), "y": int(ey)}]
 
 def generate_infrastructure(
     width: int,

@@ -1,4 +1,5 @@
 import numpy as np
+import heapq
 from typing import List, Dict, Tuple, Set
 from .noise import seed_from_string
 
@@ -74,7 +75,7 @@ def generate_rivers(
     ]
     
     for r_idx, (sx, sy) in enumerate(river_sources):
-        path = [{"x": sx, "y": sy}]
+        path = [{"x": int(sx), "y": int(sy)}]
         visited = { (sx, sy) }
         cx, cy = sx, sy
         pooled = False
@@ -100,24 +101,120 @@ def generate_rivers(
             if lowest_elev < elevation[cy, cx]:
                 # If we hit ocean, terminate river at the boundary
                 if water_type[ny, nx] == "ocean":
-                    path.append({"x": nx, "y": ny})
+                    path.append({"x": int(nx), "y": int(ny)})
                     break
                 
                 # Flow downhill
                 cx, cy = nx, ny
-                path.append({"x": cx, "y": cy})
+                path.append({"x": int(cx), "y": int(cy)})
                 visited.add((cx, cy))
             else:
-                # We hit a local minimum / sink. Let's pool into a lake!
+                # We hit a local minimum / sink. Let's pool/flood until we spill over!
                 pooled = True
-                # Pool current cell and its immediate land neighbors
-                water_type[cy, cx] = "lake"
+                basin = { (cx, cy) }
+                boundary_pq = []
+                queued = set()
+                
                 for dx, dy in neighbors_offsets:
-                    lx, ly = cx + dx, cy + dy
-                    if 0 <= lx < width and 0 <= ly < height:
-                        if water_type[ly, lx] == "none":
-                            water_type[ly, lx] = "lake"
-                break
+                    nbx, nby = cx + dx, cy + dy
+                    if 0 <= nbx < width and 0 <= nby < height:
+                        if (nbx, nby) not in basin:
+                            heapq.heappush(boundary_pq, (elevation[nby, nbx], nbx, nby))
+                            queued.add((nbx, nby))
+                
+                spillover = None
+                lake_level = elevation[cy, cx]
+                
+                while boundary_pq:
+                    elev_b, bx, by = heapq.heappop(boundary_pq)
+                    lake_level = max(lake_level, elev_b)
+                    
+                    # Check if this boundary cell can spill to an unvisited cell lower than lake_level
+                    is_spill = False
+                    for dx, dy in neighbors_offsets:
+                        sx_nb, sy_nb = bx + dx, by + dy
+                        if 0 <= sx_nb < width and 0 <= sy_nb < height:
+                            if (sx_nb, sy_nb) not in basin:
+                                if elevation[sy_nb, sx_nb] < lake_level or water_type[sy_nb, sx_nb] == "ocean":
+                                    is_spill = True
+                                    break
+                                    
+                    if is_spill:
+                        spillover = (bx, by)
+                        break
+                        
+                    # Add to basin
+                    basin.add((bx, by))
+                    
+                    # Push neighbors of this cell to boundary
+                    for dx, dy in neighbors_offsets:
+                        nbx, nby = bx + dx, by + dy
+                        if 0 <= nbx < width and 0 <= nby < height:
+                            if (nbx, nby) not in basin and (nbx, nby) not in queued:
+                                heapq.heappush(boundary_pq, (elevation[nby, nbx], nbx, nby))
+                                queued.add((nbx, nby))
+                                
+                    if len(basin) > 30:
+                        break
+                        
+                if spillover:
+                    # Fill the basin with lake water
+                    for lx, ly in basin:
+                        water_type[ly, lx] = "lake"
+                        
+                    # Run BFS within the basin to find a contiguous path of adjacent cells
+                    # from the current sink (cx, cy) to the spillover point (bx, by).
+                    start_node = (cx, cy)
+                    end_node = spillover
+                    
+                    queue = [[start_node]]
+                    bfs_visited = {start_node}
+                    bfs_path = []
+                    
+                    end_x, end_y = end_node
+                    end_adjacent_in_basin = []
+                    for dx, dy in neighbors_offsets:
+                        ax, ay = end_x + dx, end_y + dy
+                        if (ax, ay) in basin:
+                            end_adjacent_in_basin.append((ax, ay))
+                            
+                    if start_node in end_adjacent_in_basin:
+                        bfs_path = [start_node, end_node]
+                    else:
+                        found_path = False
+                        while queue:
+                            curr_path = queue.pop(0)
+                            curr_cell = curr_path[-1]
+                            
+                            if curr_cell in end_adjacent_in_basin:
+                                bfs_path = curr_path + [end_node]
+                                found_path = True
+                                break
+                                
+                            for dx, dy in neighbors_offsets:
+                                nx, ny = curr_cell[0] + dx, curr_cell[1] + dy
+                                if (nx, ny) in basin and (nx, ny) not in bfs_visited:
+                                    bfs_visited.add((nx, ny))
+                                    queue.append(curr_path + [(nx, ny)])
+                                    
+                        if not found_path:
+                            bfs_path = [end_node]
+                            
+                    # Add all steps of the BFS path to the river path (except the start node, which is already in path)
+                    for step in bfs_path[1:]:
+                        px, py = step
+                        path.append({"x": int(px), "y": int(py)})
+                        visited.add((px, py))
+                        
+                    # Reroute river downhill from the spillover cell
+                    cx, cy = spillover
+                    if water_type[cy, cx] == "ocean":
+                        break
+                else:
+                    # Fallback: fill the basin and terminate river routing
+                    for lx, ly in basin:
+                        water_type[ly, lx] = "lake"
+                    break
                 
         # Only record if the path is reasonably long or pooled
         if len(path) >= 4 or pooled:

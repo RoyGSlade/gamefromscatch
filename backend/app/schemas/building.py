@@ -1,0 +1,27 @@
+from pydantic import BaseModel, Field
+from typing import List
+
+class BuildingSchema(BaseModel):
+    id: str = Field(..., description="Unique building ID")
+    settlement_id: str = Field(..., description="Parent settlement ID")
+    district_id: str = Field(..., description="Associated district ID")
+    type: str = Field(..., description="Building archetype classification")
+    name: str = Field(..., description="Unique or descriptive building name")
+    x: int = Field(..., ge=0, le=127, description="Absolute global X coordinate of building")
+    y: int = Field(..., ge=0, le=127, description="Absolute global Y coordinate of building")
+    width: int = Field(..., ge=1, description="Cell width footprint")
+    height: int = Field(..., ge=1, description="Cell height footprint")
+    rotation: float = Field(..., description="Rotation angle in radians")
+    tier: int = Field(..., ge=1, le=5, description="Structure quality tier")
+    condition: float = Field(..., ge=0.0, le=1.0, description="Building structural integrity rating")
+    purpose: str = Field(..., description="Operational purpose description")
+    origin_reasons: List[str] = Field(..., description="Specific geographical or economic placement causations")
+    requires: List[str] = Field(..., description="Resource inputs required to build/operate")
+    produces: List[str] = Field(..., description="Resource products produced")
+    consumes: List[str] = Field(..., description="Consumables demanded")
+    job_slots: List[str] = Field(..., description="List of associated job slot IDs")
+    public_access: bool = Field(..., description="True if accessible to commoners")
+    locked_at_night: bool = Field(..., description="True if locked during night hours")
+    obscurity_rating: int = Field(..., ge=0, description="Passive perception difficulty threshold")
+    price_modifier: float = Field(..., ge=0.0, description="Local trade markup modifier")
+    tags: List[str] = Field(..., description="Metadata tags")

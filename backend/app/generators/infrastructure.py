@@ -144,8 +144,8 @@ def astar(
                     heapq.heappush(pq, (f, nx, ny))
                     parents[(nx, ny)] = (cx, cy)
 
-    # Absolute fallback: direct line
-    return [{"x": int(sx), "y": int(sy)}, {"x": int(ex), "y": int(ey)}]
+    # Absolute fallback: empty list instead of fake direct line
+    return []
 
 def generate_infrastructure(
     width: int,
@@ -170,10 +170,19 @@ def generate_infrastructure(
     road_path = astar(width, height, (tx, ty), (ox, oy), elevation, biomes, water_type)
     road_name = f"{town['name']}-{outpost['name']} Trail"
     
+    # Assess route status
+    if not road_path:
+        route_status = "blocked"
+    elif any(water_type[node["y"], node["x"]] == "ocean" for node in road_path):
+        route_status = "requires_ferry"
+    else:
+        route_status = "active"
+        
     roads = [{
         "id": "road_01",
         "path": road_path,
-        "origin_reason": f"Established to secure trade and raw material haulage between the town of {town['name']} and the {outpost['type']} of {outpost['name']}."
+        "origin_reason": f"Established to secure trade and raw material haulage between the town of {town['name']} and the {outpost['type']} of {outpost['name']}.",
+        "route_status": route_status
     }]
     
     # 2. Place Bridges at River crossings

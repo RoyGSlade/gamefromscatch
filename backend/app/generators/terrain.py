@@ -25,12 +25,12 @@ def generate_terrain(width: int, height: int, seed_str: str):
     ny = ny_base + noise_offset_y
     d = np.sqrt(nx**2 + ny**2) * 2.0  # 0 at center, 1+ at boundaries
     
-    # 3. Organic Mask: Replace strict radial mask with a noise-modulated coordinate mask (highly organic, natural, and non-circular)
-    # We generate a noise field specifically for the boundary modulation
+    # 3. Region Falloff: Replace strict radial mask with a noise-modulated coordinate mask (preserving compatibility but marked as region_falloff)
+    # TODO: In Sprint 4, transition to a fully decentralized multi-landmass tectonic plate simulation.
     boundary_noise = noise.fBm(width, height, scale=0.015, octaves=3, persistence=0.5, lacunarity=2.0, offset_x=1200.0, offset_y=1200.0)
     # Modulate the distance threshold organically: base of 0.8 modulated by ±0.15 based on noise
     mask_threshold = 0.8 + 0.15 * (boundary_noise - 0.5) * 2.0
-    organic_mask = np.clip(1.0 - (d / mask_threshold) ** 2, 0.0, 1.0)
+    region_falloff = np.clip(1.0 - (d / mask_threshold) ** 2, 0.0, 1.0)
     
     # 3. Base Terrain fBm Noise
     base_elevation = noise.fBm(width, height, scale=0.012, octaves=5, persistence=0.5, lacunarity=2.1)
@@ -63,9 +63,10 @@ def generate_terrain(width: int, height: int, seed_str: str):
     belt_mask = np.clip(1.0 - np.abs(belt_noise - 0.5) / 0.12, 0.0, 1.0)
     belt_mask = belt_mask * belt_mask  # smooth transition
     
-    # Blend base elevation with mountain ridges along the tectonic belts, and apply our organic mask
+    # Blend base elevation with mountain ridges along the tectonic belts, and apply our organic region falloff
     combined = base_elevation * 0.7 + ridge_noise * 0.35 * belt_mask
-    elevation = combined * organic_mask
+    # Reduce region_falloff authority so land can generate beyond the center if noise is very strong
+    elevation = combined * (0.85 * region_falloff + 0.15)
     
     # Normalize elevation after masking to ensure peaks rise up deterministically to a beautiful maximum (0.95)
     e_min, e_max = elevation.min(), elevation.max()

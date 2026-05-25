@@ -14,5 +14,8 @@
     "city-generator"
   ],
   "author": "Antigravity",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "vite": "^8.0.14"
+  }
 }

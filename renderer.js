@@ -262,6 +262,12 @@ export class MapRenderer {
     }
 
     drawSettlements(ctx) {
+        const zoom = this.viewport.camera.zoom;
+        if (zoom >= 1.5) {
+            this.drawSettlementLayouts(ctx);
+            return;
+        }
+
         ctx.save();
         const size = this.cellSize;
 
@@ -290,6 +296,167 @@ export class MapRenderer {
             ctx.fill();
         });
         ctx.restore();
+    }
+
+    drawSettlementLayouts(ctx) {
+        if (!this.world.settlement_layouts) return;
+
+        const zoom = this.viewport.camera.zoom;
+        const size = this.cellSize;
+        
+        // Grab debug checkbox elements dynamically (safe fallback if they don't exist)
+        const showDistricts = document.getElementById('districtsToggle') ? document.getElementById('districtsToggle').checked : true;
+
+        // 1. Draw Districts (translucent circles behind)
+        if (showDistricts) {
+            ctx.save();
+            const DISTRICT_COLORS = {
+                town_center: "rgba(239, 68, 68, 0.12)",
+                market: "rgba(245, 158, 11, 0.12)",
+                residential_common: "rgba(59, 130, 246, 0.10)",
+                craft: "rgba(16, 185, 129, 0.10)",
+                religious: "rgba(139, 92, 246, 0.10)",
+                river_industry: "rgba(6, 182, 212, 0.10)",
+                docks: "rgba(14, 165, 233, 0.10)",
+                
+                extraction_site: "rgba(244, 63, 94, 0.12)",
+                worker_camp: "rgba(100, 116, 139, 0.10)",
+                storage_yard: "rgba(120, 113, 108, 0.10)",
+                overseer_office: "rgba(234, 179, 8, 0.12)"
+            };
+
+            const DISTRICT_STROKES = {
+                town_center: "rgba(239, 68, 68, 0.35)",
+                market: "rgba(245, 158, 11, 0.35)",
+                residential_common: "rgba(59, 130, 246, 0.25)",
+                craft: "rgba(16, 185, 129, 0.25)",
+                religious: "rgba(139, 92, 246, 0.25)",
+                river_industry: "rgba(6, 182, 212, 0.25)",
+                docks: "rgba(14, 165, 233, 0.25)",
+                
+                extraction_site: "rgba(244, 63, 94, 0.35)",
+                worker_camp: "rgba(100, 116, 139, 0.25)",
+                storage_yard: "rgba(120, 113, 108, 0.25)",
+                overseer_office: "rgba(234, 179, 8, 0.35)"
+            };
+
+            this.world.settlement_layouts.forEach(layout => {
+                layout.districts.forEach(dist => {
+                    const cx = dist.x * size + size/2;
+                    const cy = dist.y * size + size/2;
+                    const r = dist.radius * size;
+
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                    ctx.fillStyle = DISTRICT_COLORS[dist.type] || "rgba(255, 255, 255, 0.08)";
+                    ctx.fill();
+                    ctx.strokeStyle = DISTRICT_STROKES[dist.type] || "rgba(255, 255, 255, 0.2)";
+                    ctx.lineWidth = 1.2;
+                    ctx.stroke();
+
+                    // Render District Labels in Center
+                    ctx.fillStyle = this.mapStyle === 'antique' ? 'rgba(67, 43, 20, 0.7)' : 'rgba(255, 255, 255, 0.75)';
+                    ctx.shadowColor = 'black';
+                    ctx.shadowBlur = this.mapStyle === 'antique' ? 0 : 3;
+                    ctx.font = 'bold 8.5px Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    const labelText = dist.type.replace("_", " ").toUpperCase();
+                    ctx.fillText(labelText, cx, cy);
+                });
+            });
+            ctx.restore();
+        }
+
+        // 2. Draw Local Roads
+        ctx.save();
+        ctx.lineWidth = 1.5;
+        this.world.settlement_layouts.forEach(layout => {
+            layout.local_roads.forEach(road => {
+                if (road.path.length < 2) return;
+
+                if (road.road_type === "stone") {
+                    ctx.strokeStyle = this.mapStyle === 'antique' ? 'rgba(80, 80, 80, 0.75)' : 'rgba(148, 163, 184, 0.8)';
+                    ctx.setLineDash([]);
+                } else if (road.road_type === "dirt") {
+                    ctx.strokeStyle = this.mapStyle === 'antique' ? 'rgba(120, 90, 60, 0.75)' : 'rgba(139, 92, 26, 0.8)';
+                    ctx.setLineDash([]);
+                } else if (road.road_type === "dockwalk") {
+                    ctx.strokeStyle = this.mapStyle === 'antique' ? 'rgba(92, 64, 51, 0.85)' : 'rgba(120, 53, 4, 0.9)'; // deep wooden planks
+                    ctx.setLineDash([]);
+                } else { // footpath
+                    ctx.strokeStyle = this.mapStyle === 'antique' ? 'rgba(100, 100, 100, 0.65)' : 'rgba(168, 162, 158, 0.7)';
+                    ctx.setLineDash([2, 3]);
+                }
+
+                ctx.beginPath();
+                ctx.moveTo(road.path[0].x * size + size/2, road.path[0].y * size + size/2);
+                for (let i = 1; i < road.path.length; i++) {
+                    ctx.lineTo(road.path[i].x * size + size/2, road.path[i].y * size + size/2);
+                }
+                ctx.stroke();
+            });
+        });
+        ctx.restore();
+
+        // 3. Draw Buildings (High Zoom zoom >= 3.8)
+        if (zoom >= 3.8) {
+            ctx.save();
+            ctx.shadowBlur = this.mapStyle === 'antique' ? 0 : 4;
+            ctx.shadowColor = 'black';
+
+            this.world.settlement_layouts.forEach(layout => {
+                layout.buildings.forEach(bld => {
+                    const px = bld.x * size;
+                    const py = bld.y * size;
+                    const pw = bld.width * size;
+                    const ph = bld.height * size;
+                    const cx = px + pw/2;
+                    const cy = py + ph/2;
+
+                    // Compute cohesive building color
+                    let baseColor = "#64748b";
+                    const t = bld.type.toLowerCase();
+                    if (t.includes("hall") || t.includes("overseer")) {
+                        baseColor = this.mapStyle === 'antique' ? "#5c5040" : "#1e40af"; // royal blue
+                    } else if (t.includes("house") || t.includes("bunkhouse")) {
+                        baseColor = this.mapStyle === 'antique' ? "#785a44" : "#9a3412"; // warm brick/clay
+                    } else if (t.includes("tavern") || t.includes("store")) {
+                        baseColor = this.mapStyle === 'antique' ? "#8c6d3e" : "#b45309"; // amber/wood
+                    } else if (t.includes("blacksmith") || t.includes("sawmill") || t.includes("mill") || t.includes("shed") || t.includes("entrance") || t.includes("yard")) {
+                        baseColor = this.mapStyle === 'antique' ? "#4a4f48" : "#334155"; // industrial iron/slate
+                    } else if (t.includes("docks") || t.includes("fishmonger") || t.includes("fishery")) {
+                        baseColor = this.mapStyle === 'antique' ? "#405c5c" : "#0f766e"; // aquatic teal
+                    } else if (t.includes("shrine") || t.includes("temple")) {
+                        baseColor = this.mapStyle === 'antique' ? "#6a546d" : "#5b21b6"; // sacred indigo
+                    }
+
+                    ctx.fillStyle = baseColor;
+                    ctx.strokeStyle = bld.tier >= 3 ? "#fbbf24" : "rgba(255, 255, 255, 0.75)";
+                    ctx.lineWidth = bld.tier >= 3 ? 1.5 : 0.8;
+
+                    ctx.save();
+                    ctx.translate(cx, cy);
+                    if (bld.rotation) {
+                        ctx.rotate(bld.rotation);
+                    }
+                    ctx.fillRect(-pw/2, -ph/2, pw, ph);
+                    ctx.strokeRect(-pw/2, -ph/2, pw, ph);
+                    ctx.restore();
+
+                    // Overlay name labels inside/on-top of building footprint
+                    ctx.fillStyle = "#ffffff";
+                    ctx.strokeStyle = "#000000";
+                    ctx.lineWidth = 2.0;
+                    ctx.font = "bold 7px Inter, sans-serif";
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.strokeText(bld.name, cx, cy);
+                    ctx.fillText(bld.name, cx, cy);
+                });
+            });
+            ctx.restore();
+        }
     }
 
     drawMobileTokens(ctx) {

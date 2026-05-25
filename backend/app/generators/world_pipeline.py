@@ -5,6 +5,7 @@ from .hydrology import generate_rivers
 from .resources import generate_resources
 from .settlements import place_settlements
 from .infrastructure import generate_infrastructure
+from .settlement_layout import generate_settlement_layout
 
 def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
     """
@@ -14,7 +15,7 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
     width = 128
     height = 128
     
-    # 1. Terrain Generation
+    # 1. Terrain Generation (multi-landmass tectonic plates)
     terrain_data = generate_terrain(width, height, seed_str)
     elevation = terrain_data["elevation"]
     moisture = terrain_data["moisture"]
@@ -28,36 +29,47 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
         width, height, elevation, biomes, sea_level, seed_str
     )
     
-    # Update biomes based on lakes (if water_type is lake, we can color it or set biome as Lake)
+    # Update biomes based on lakes
     for y in range(height):
         for x in range(width):
             if water_type[y, x] == "lake":
                 biomes[y, x] = "Freshwater Lake"
                 
-    # 3. Resources Distribution
+    # 3. Resources Distribution (12-type expanded taxonomy)
     resources_list, resource_grid = generate_resources(
         width, height, biomes, water_type, seed_str
     )
     
-    # 4. Place Settlements (Town and Outpost)
-    settlements_list, town, outpost = place_settlements(
+    # 4. Place Settlements (Capital, Towns, and Resource Outposts)
+    settlements_list, _ = place_settlements(
         width, height, elevation, biomes, water_type, resources_list, seed_str
     )
     
-    # 5. Generate Infrastructure (Roads, Bridges, POIs, Mobile Tokens)
+    # 5. Generate Infrastructure (Delaunay road graph, Bridges, POIs, Mobile Tokens)
     roads, bridges, pois, mobile_tokens = generate_infrastructure(
-        width, height, elevation, biomes, water_type, river_flow, town, outpost, seed_str
+        width, height, elevation, biomes, water_type, river_flow,
+        settlements_list, seed_str
     )
+
+    # Build set of road cells for travel cost adjustment, with road type for differentiation
+    road_cell_types = {}  # (x, y) -> road_type
+    for road in roads:
+        road_type = road.get("type", "dirt_road")
+        for node in road["path"]:
+            key = (node["x"], node["y"])
+            # Keep the highest-tier road type if multiple roads share a cell
+            existing = road_cell_types.get(key)
+            if existing is None or _road_type_priority(road_type) > _road_type_priority(existing):
+                road_cell_types[key] = road_type
     
     # 6. Build the Cell list for output
     cells = []
     for y in range(height):
         for x in range(width):
-            # Compute a realistic travel cost based on elevation gradient, water, and biomes
             b = biomes[y, x]
             wt = water_type[y, x]
             
-            # Deep/shallow ocean are hard to travel (unless via boat, but on foot impassable)
+            # Base travel cost by terrain
             if wt == "ocean":
                 travel_cost = 99.0
             elif wt == "lake":
@@ -71,19 +83,16 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
             elif b == "Murky Swamp":
                 travel_cost = 4.5
             else:
-                travel_cost = 1.0  # flat land / Plains / Beach / Desert
+                travel_cost = 1.0
                 
-            # Roads drastically lower travel cost to a minimum base!
-            # (We will check if this cell is part of any road)
-            is_on_road = False
-            for road in roads:
-                for node in road["path"]:
-                    if node["x"] == x and node["y"] == y:
-                        is_on_road = True
-                        break
-                        
-            if is_on_road:
-                travel_cost = 0.5  # secure trade trail
+            # Roads reduce travel cost based on road tier
+            road_type = road_cell_types.get((x, y))
+            if road_type == "highway":
+                travel_cost = 0.3
+            elif road_type == "trade_road":
+                travel_cost = 0.5
+            elif road_type == "dirt_road":
+                travel_cost = 0.8
                 
             cells.append({
                 "x": x,
@@ -99,8 +108,7 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
                 "resources": resource_grid[y][x]
             })
             
-    # 5.5. Generate Settlement Layouts
-    from .settlement_layout import generate_settlement_layout
+    # 7. Generate Settlement Layouts
     settlement_layouts = []
     for s in settlements_list:
         layout = generate_settlement_layout(s, elevation, biomes, water_type, roads, width, height)
@@ -120,3 +128,8 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
         "mobile_tokens": mobile_tokens,
         "settlement_layouts": settlement_layouts
     }
+
+
+def _road_type_priority(road_type: str) -> int:
+    """Returns priority value for road types (higher = better road)."""
+    return {"highway": 3, "trade_road": 2, "dirt_road": 1}.get(road_type, 0)

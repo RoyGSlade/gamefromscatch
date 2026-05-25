@@ -69,18 +69,20 @@ def test_dockyard_coastal_proximity():
 def test_mining_outpost_resource_causality():
     """
     Assert that Mining Office or Mine Entrance only appears when valid ore resources
-    (Iron Ore or Gold) are present in the settlement resource profiles.
+    are present in the settlement resource profiles.
     """
     world = generate_full_world_slice("Eldoria")
     layouts = world["settlement_layouts"]
+    
+    mineable_resources = {"Iron Ore", "Gold", "Copper", "Coal", "Silver", "Mithril", "Arcane Crystals"}
     
     for layout in layouts:
         settlement = next(s for s in world["settlements"] if s["id"] == layout["settlement_id"])
         mine_buildings = [b for b in layout["buildings"] if b["type"] in ["mine_entrance", "mining_office"]]
         
         if mine_buildings:
-            has_ore = "Iron Ore" in settlement["resources"] or "Gold" in settlement["resources"]
-            assert has_ore, "Mine buildings can only spawn in settlements with high-yield iron/gold veins"
+            has_ore = bool(set(settlement["resources"]) & mineable_resources)
+            assert has_ore, "Mine buildings can only spawn in settlements with mineable ore resources"
 
 def test_job_and_chain_id_validation():
     """

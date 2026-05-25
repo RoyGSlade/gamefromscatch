@@ -4,6 +4,9 @@
  * and wires up mouse pans, zooms, inspections, and style toggles.
  */
 import { MapRenderer } from './renderer.js';
+import { Simulation } from './simulation.js';
+import { Player } from './player.js';
+import { AIBridge } from './aiBridge.js';
 
 // DOM Elements
 const canvas = document.getElementById('mapCanvas');
@@ -33,11 +36,17 @@ const dayPhaseDisplay = document.getElementById('dayPhaseDisplay');
 // Application State
 let world = null;       // Holds fetched JSON map state
 let renderer = null;    // MapRenderer instance
+let simulation = null;  // Event-driven turn clock and mobile token state
+let player = null;      // Party token and perception state
+let aiBridge = null;    // Local model context bridge
 let hoveredCity = null;
 let selectedCity = null;
 let isDragging = false;
+let hasDragged = false;
 let startX = 0;
 let startY = 0;
+let downX = 0;
+let downY = 0;
 let lastFrameTime = performance.now();
 let inspectedType = null; // 'settlement', 'district', 'building'
 let inspectedData = null;
@@ -82,7 +91,6 @@ function handleResize() {
  */
 async function generateNewWorld(seed) {
     try {
-        console.log(`Requesting world slice for seed: "${seed}"...`);
         const response = await fetch(`/api/world/generate?seed=${encodeURIComponent(seed)}`);
         
         if (!response.ok) {
@@ -90,9 +98,21 @@ async function generateNewWorld(seed) {
         }
         
         world = await response.json();
-        console.log("Successfully loaded world slice:", world);
         
-        renderer = new MapRenderer(canvas, world);
+        simulation = new Simulation();
+        simulation.initializeMobileTokens(world.mobile_tokens || []);
+
+        const startSettlement = world.settlements?.find(s => s.type === 'town') || world.settlements?.[0];
+        const startX = startSettlement?.x ?? Math.floor(world.width / 2);
+        const startY = startSettlement?.y ?? Math.floor(world.height / 2);
+        player = new Player(startX, startY, world);
+        aiBridge = new AIBridge({ player, simulation, world });
+
+        renderer = new MapRenderer(canvas, world, { simulation, player });
+        simulation.onTurn(() => {
+            renderer?.draw();
+            updateStatusBar(player.cellX, player.cellY);
+        });
         
         // Reset selections
         hoveredCity = null;
@@ -113,6 +133,9 @@ function setupMouseListeners() {
     canvas.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return; // Left click only
         isDragging = true;
+        hasDragged = false;
+        downX = e.clientX;
+        downY = e.clientY;
         startX = e.clientX;
         startY = e.clientY;
     });
@@ -121,6 +144,12 @@ function setupMouseListeners() {
         if (isDragging) {
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
+
+            if (!hasDragged && Math.hypot(e.clientX - downX, e.clientY - downY) < 4) {
+                return;
+            }
+
+            hasDragged = true;
             if (renderer) {
                 renderer.viewport.pan(dx, dy);
                 renderer.draw();
@@ -134,9 +163,10 @@ function setupMouseListeners() {
     });
 
     canvas.addEventListener('mouseup', (e) => {
-        if (isDragging) {
+        if (isDragging && hasDragged) {
             isDragging = false;
         } else {
+            isDragging = false;
             handleClick(e.clientX, e.clientY);
         }
         canvas.style.cursor = hoveredCity ? 'pointer' : 'grab';
@@ -216,9 +246,7 @@ function handleHover(mx, my) {
         // 3. Check if hovering a mobile token
         if (!renderer.hoveredBuilding && !renderer.hoveredDistrict) {
             for (const tok of world.mobile_tokens) {
-                const speed = tok.type === 'caravan' ? 0.08 : 0.15;
-                const index = Math.floor(renderer.animFrame * speed) % tok.route.length;
-                const p = tok.route[index] || { x: tok.x, y: tok.y };
+                const p = renderer.getMobileTokenPosition(tok);
                 
                 const tcx = p.x * renderer.cellSize + renderer.cellSize/2;
                 const tcy = p.y * renderer.cellSize + renderer.cellSize/2;
@@ -238,6 +266,8 @@ function handleHover(mx, my) {
 
 function handleClick(mx, my) {
     if (!renderer || !world) return;
+
+    handleHover(mx, my);
     
     const { cellX, cellY } = renderer.screenToWorld(mx, my);
     const zoom = renderer.viewport.camera.zoom;
@@ -287,7 +317,32 @@ function handleClick(mx, my) {
         }
     }
     
+    if (cellX >= 0 && cellX < world.width && cellY >= 0 && cellY < world.height) {
+        handleTravelCommand(cellX, cellY);
+        return;
+    }
+
     closeInspector();
+}
+
+function handleTravelCommand(cellX, cellY) {
+    if (!player || !simulation || !renderer) return;
+
+    const result = player.moveTo(cellX, cellY);
+    if (!result.ok) {
+        console.warn(`No traversable path to (${cellX}, ${cellY}).`);
+        return;
+    }
+
+    const event = simulation.advanceTurn('travel', result.cost, {
+        destination: { x: cellX, y: cellY },
+        steps: result.steps
+    });
+
+    closeInspector();
+    renderer.draw();
+    updateStatusBar(player.cellX, player.cellY);
+    console.info('Travel turn advanced:', event);
 }
 
 function updateStatusBar(cellX, cellY) {
@@ -324,7 +379,8 @@ function updateStatusBar(cellX, cellY) {
                 }
                 
                 if (hoverBuilding) {
-                    territoryText.textContent = `${hoverBuilding.name} (Tier ${hoverBuilding.tier})`;
+                    const buildingName = renderer.getBuildingDisplayName(hoverBuilding) || 'Unseen Building';
+                    territoryText.textContent = `${buildingName} (Tier ${hoverBuilding.tier})`;
                     territoryText.style.color = '#fbbf24';
                 } else if (hoverDistrict) {
                     const formattedDist = hoverDistrict.type.toUpperCase().replace("_", " ");
@@ -341,11 +397,8 @@ function updateStatusBar(cellX, cellY) {
         }
     }
 
-    const zoom = renderer.viewport.camera.zoom;
-    if (zoom < 0.6) lodText.textContent = `Continent`;
-    else if (zoom < 2.0) lodText.textContent = `Province`;
-    else if (zoom < 5.0) lodText.textContent = `Settlement Survey`;
-    else lodText.textContent = `Detail Survey`;
+    const { macroAlpha, microAlpha, detailAlpha } = renderer.getLayerAlphas();
+    lodText.textContent = `Macro ${Math.round(macroAlpha * 100)}% / Local ${Math.round(microAlpha * 100)}% / Detail ${Math.round(detailAlpha * 100)}%`;
 }
 
 function setupUIListeners() {
@@ -429,7 +482,6 @@ function populateCityList(settlements) {
                 renderer.viewport.camera.x = settle.x * renderer.cellSize;
                 renderer.viewport.camera.y = settle.y * renderer.cellSize;
                 renderer.viewport.camera.zoom = 2.5; // fly in zoom
-                renderer.viewport.updateLOD();
                 renderer.draw();
                 updateStatusBar(settle.x, settle.y);
             }
@@ -506,26 +558,29 @@ function inspectBuilding(bld, layout) {
         renderer.selectedBuilding = bld;
         renderer.draw();
     }
-    
+
+    const displayName = (renderer ? renderer.getBuildingDisplayName(bld) : bld.name) || 'Unknown Building';
+    const isMasked = displayName === 'Unknown Building';
+
     let html = `
-        <h3 class="inspector-title">${bld.name}</h3>
+        <h3 class="inspector-title">${displayName}</h3>
         <div class="inspector-subtitle" style="--glow-color: #fbbf24">
-            ${bld.type.toUpperCase().replace("_", " ")} - Tier ${bld.tier}
+            ${isMasked ? 'UNIDENTIFIED STRUCTURE' : bld.type.toUpperCase().replace("_", " ")} - Tier ${bld.tier}
         </div>
         
         <div class="inspector-stats" style="grid-template-columns: repeat(2, 1fr);">
             <div class="stat-box"><div class="stat-label">Settlement</div><div class="stat-val">${selectedCity.name}</div></div>
             <div class="stat-box"><div class="stat-label">Condition</div><div class="stat-val">${Math.round((bld.condition ?? 0) * 100)}%</div></div>
             <div class="stat-box"><div class="stat-label">Obscurity</div><div class="stat-val">${bld.obscurity_rating ?? 0}</div></div>
-            <div class="stat-box"><div class="stat-label">Price Mod</div><div class="stat-val">${(bld.price_modifier ?? 1).toFixed(2)}x</div></div>
+            <div class="stat-box"><div class="stat-label">Price Mod</div><div class="stat-val">${isMasked ? 'Unknown' : `${(bld.price_modifier ?? 1).toFixed(2)}x`}</div></div>
         </div>
         
         <div class="inspector-divider"></div>
         <p class="inspector-description" style="font-weight: 500;">
-            Purpose: <span style="color: #94a3b8; font-weight: normal;">${bld.purpose ?? 'Unknown'}</span>
+            Purpose: <span style="color: #94a3b8; font-weight: normal;">${isMasked ? 'Unknown' : (bld.purpose ?? 'Unknown')}</span>
         </p>
         <p class="inspector-description" style="font-style: italic; color: var(--gold);">
-            Origin Cause: "${formatList(bld.origin_reasons, 'Unknown')}"
+            Origin Cause: "${isMasked ? 'Not yet identified by passive perception.' : formatList(bld.origin_reasons, 'Unknown')}"
         </p>
     `;
     
@@ -596,6 +651,7 @@ function inspectBuilding(bld, layout) {
         <button class="btn btn-primary" style="margin-top: 8px; width: 100%;" onclick="window.inspectCityById('${selectedCity.id}')">➔ View Settlement Overview</button>
     `;
     
+    html += `<button class="btn btn-primary" style="margin-top: 8px; width: 100%;" onclick="window.openInteractionForBuilding('${bld.id}')">Act Here</button>`;
     inspectorContent.innerHTML = html;
     inspectorPanel.classList.add('open');
 }
@@ -706,6 +762,18 @@ window.inspectCityById = (settleId) => {
     }
 };
 
+window.openInteractionForBuilding = (bldId) => {
+    if (!world || !aiBridge) return;
+    for (const layout of world.settlement_layouts || []) {
+        const bld = layout.buildings.find(b => b.id === bldId);
+        if (bld) {
+            const settlement = world.settlements.find(s => s.id === layout.settlement_id);
+            aiBridge.openInteraction(settlement, bld, layout);
+            break;
+        }
+    }
+};
+
 function closeInspector() {
     selectedCity = null;
     inspectedType = null;
@@ -724,28 +792,12 @@ function closeInspector() {
 }
 
 function tick(now) {
-    const dt = (now - lastFrameTime) / 1000.0;
     lastFrameTime = now;
 
     if (renderer && world) {
         renderer.update();
         renderer.draw();
-        
-        // Dynamic game time ticks purely on the client side for aesthetics
-        const totalMinutes = Math.floor(now * 0.02) % (24 * 60);
-        const hours = Math.floor(totalMinutes / 60);
-        const minutes = totalMinutes % 60;
-        const ampm = hours >= 12 ? 'PM' : 'AM';
-        const displayHours = hours % 12 === 0 ? 12 : hours % 12;
-        const padMins = minutes.toString().padStart(2, '0');
-        clockDisplay.textContent = `${displayHours}:${padMins} ${ampm}`;
-        
-        let phase = "Morning";
-        if (hours >= 18) phase = "Night";
-        else if (hours >= 12) phase = "Afternoon";
-        else if (hours >= 6) phase = "Morning";
-        else phase = "Midnight";
-        dayPhaseDisplay.textContent = phase;
+        simulation?.updateUI();
     }
     
     requestAnimationFrame(tick);

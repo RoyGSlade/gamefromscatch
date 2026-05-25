@@ -3,7 +3,7 @@
  * Renders biomes, hillshade 3D relief, dynamically scaled rivers,
  * roads, bridges, settlements, POIs (debug toggled), and animated mobile tokens.
  */
-import { ViewportManager, LOD_TIERS } from './viewport.js';
+import { ViewportManager } from './viewport.js';
 import { LabelEngine } from './labelEngine.js';
 
 // Curated harmonious color palettes for premium cartography
@@ -38,10 +38,12 @@ const BIOME_COLORS_ANTIQUE = {
 };
 
 export class MapRenderer {
-    constructor(canvas, worldData) {
+    constructor(canvas, worldData, options = {}) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.world = worldData; // JSON data from FastAPI backend
+        this.simulation = options.simulation || null;
+        this.player = options.player || null;
 
         this.viewport = new ViewportManager(canvas.width, canvas.height);
         this.mapStyle = 'physical'; // Default to Physical Relief
@@ -55,7 +57,7 @@ export class MapRenderer {
         this.viewport.camera.y = this.worldHeightPx / 2;
         this.viewport.camera.zoom = 0.65; // Nice initial scale
 
-        // Simulation frame count for smooth token micro-animations
+        // Retained for visual-only effects; token locations are turn-driven.
         this.animFrame = 0;
 
         // Interactive selection and hover state trackers
@@ -66,6 +68,14 @@ export class MapRenderer {
 
         // Label collision placement engine
         this.labelEngine = new LabelEngine();
+
+        this.controls = {
+            poiDebug: document.getElementById('poiDebugToggle'),
+            districts: document.getElementById('districtsToggle'),
+            districtLabels: document.getElementById('districtLabelsToggle'),
+            tokenRoutes: document.getElementById('tokenRoutesToggle')
+        };
+        this.settlementCellBounds = this.buildSettlementCellBounds();
     }
 
     worldToScreen(wx, wy) {
@@ -87,6 +97,65 @@ export class MapRenderer {
         this.animFrame += 1;
     }
 
+    setSimulation(simulation) {
+        this.simulation = simulation;
+    }
+
+    setPlayer(player) {
+        this.player = player;
+    }
+
+    clamp01(value) {
+        return Math.max(0.0, Math.min(1.0, value));
+    }
+
+    getLayerAlphas() {
+        const zoom = this.viewport.camera.zoom;
+        return {
+            macroAlpha: this.clamp01((3.5 - zoom) / 2.5),
+            microAlpha: this.clamp01((zoom - 1.5) / 2.0),
+            detailAlpha: this.clamp01((zoom - 2.75) / 1.25)
+        };
+    }
+
+    getMobileTokenPosition(token) {
+        return this.simulation?.getMobileTokenPosition(token) || token.route?.[0] || { x: token.x ?? 0, y: token.y ?? 0 };
+    }
+
+    getBuildingVisibility(building) {
+        return this.player?.getBuildingVisibility(building) || 'revealed';
+    }
+
+    getBuildingDisplayName(building) {
+        const visibility = this.getBuildingVisibility(building);
+        if (visibility === 'hidden') return null;
+        if (visibility === 'unknown') return 'Unknown Building';
+        return building.name;
+    }
+
+    buildSettlementCellBounds() {
+        if (!this.world.settlement_layouts) return [];
+
+        return this.world.settlement_layouts
+            .map(layout => layout.districts[0])
+            .filter(Boolean)
+            .map(center => ({
+                minX: center.x - 10,
+                maxX: center.x + 10,
+                minY: center.y - 10,
+                maxY: center.y + 10
+            }));
+    }
+
+    isSettlementDetailCell(cell) {
+        return this.settlementCellBounds.some(bounds =>
+            cell.x >= bounds.minX &&
+            cell.x <= bounds.maxX &&
+            cell.y >= bounds.minY &&
+            cell.y <= bounds.maxY
+        );
+    }
+
     draw() {
         const ctx = this.ctx;
         const w = this.canvas.width;
@@ -103,6 +172,7 @@ export class MapRenderer {
         ctx.fillRect(0, 0, w, h);
 
         this.viewport.applyTransform(ctx);
+        const { macroAlpha, microAlpha, detailAlpha } = this.getLayerAlphas();
 
         // 1. Draw Cell Terrain (colored by biome + hillshade overlay)
         this.drawTerrain(ctx);
@@ -111,21 +181,24 @@ export class MapRenderer {
         this.drawRivers(ctx);
 
         // 3. Draw Roads
-        this.drawRoads(ctx);
+        this.drawRoads(ctx, macroAlpha);
 
         // 4. Draw Bridges
         this.drawBridges(ctx);
 
         // 5. Draw POIs (Dungeons/Caves - hidden behind debug toggle)
-        this.drawPOIs(ctx);
+        this.drawPOIs(ctx, macroAlpha);
 
         // 6. Draw Settlements (Town & Outpost)
-        this.drawSettlements(ctx);
+        this.drawSettlements(ctx, macroAlpha, microAlpha, detailAlpha);
 
         // 7. Draw Mobile Tokens (Caravans & Guards)
         this.drawMobileTokens(ctx);
 
-        // 8. Draw Labels (Settlement names)
+        // 8. Draw Player Token
+        this.drawPlayer(ctx);
+
+        // 9. Draw Labels (Settlement names)
         this.drawLabels(ctx);
 
         this.viewport.restoreTransform(ctx);
@@ -137,7 +210,7 @@ export class MapRenderer {
         const cells = this.world.cells;
         const w = this.world.width;
         const h = this.world.height;
-        const zoom = this.viewport.camera.zoom;
+        const { detailAlpha } = this.getLayerAlphas();
 
         const colorPalette = style === 'antique' ? BIOME_COLORS_ANTIQUE : BIOME_COLORS;
 
@@ -153,37 +226,39 @@ export class MapRenderer {
                 const px = cell.x * size;
                 const py = cell.y * size;
 
-                // Determine if we need to draw detailed subcells (zoom >= 3.0)
-                if (zoom >= 3.0) {
+                // Base biome color
+                let color = colorPalette[cell.biome] || colorPalette["Lush Plains"];
+
+                if (style === 'political') {
+                    if (cell.water_type !== 'none') {
+                        color = "hsl(215, 55%, 11%)";
+                    } else {
+                        color = cell.x + cell.y < 120 ? "hsla(210, 75%, 50%, 0.2)" : "hsla(42, 85%, 50%, 0.2)";
+                    }
+                }
+
+                ctx.fillStyle = color;
+                ctx.fillRect(px, py, size + 0.5, size + 0.5);
+
+                // Hillshade overlay (except in political styling)
+                if (style !== 'political') {
+                    const hs = cell.hillshade;
+                    if (hs < 0.49) {
+                        const shadowOpacity = (0.5 - hs) * 1.5;
+                        ctx.fillStyle = `rgba(0, 0, 0, ${shadowOpacity})`;
+                        ctx.fillRect(px, py, size + 0.5, size + 0.5);
+                    } else if (hs > 0.51) {
+                        const highlightOpacity = (hs - 0.5) * 1.1;
+                        ctx.fillStyle = `rgba(255, 255, 255, ${highlightOpacity})`;
+                        ctx.fillRect(px, py, size + 0.5, size + 0.5);
+                    }
+                }
+
+                if (detailAlpha > 0.01) {
+                    ctx.save();
+                    ctx.globalAlpha *= detailAlpha;
                     this.drawDetailedSubcells(ctx, cell, px, py, size, style, colorPalette);
-                } else {
-                    // Base biome color
-                    let color = colorPalette[cell.biome] || colorPalette["Lush Plains"];
-
-                    if (style === 'political') {
-                        if (cell.water_type !== 'none') {
-                            color = "hsl(215, 55%, 11%)";
-                        } else {
-                            color = cell.x + cell.y < 120 ? "hsla(210, 75%, 50%, 0.2)" : "hsla(42, 85%, 50%, 0.2)";
-                        }
-                    }
-
-                    ctx.fillStyle = color;
-                    ctx.fillRect(px, py, size + 0.5, size + 0.5);
-
-                    // Hillshade overlay (except in political styling)
-                    if (style !== 'political') {
-                        const hs = cell.hillshade;
-                        if (hs < 0.49) {
-                            const shadowOpacity = (0.5 - hs) * 1.5;
-                            ctx.fillStyle = `rgba(0, 0, 0, ${shadowOpacity})`;
-                            ctx.fillRect(px, py, size + 0.5, size + 0.5);
-                        } else if (hs > 0.51) {
-                            const highlightOpacity = (hs - 0.5) * 1.1;
-                            ctx.fillStyle = `rgba(255, 255, 255, ${highlightOpacity})`;
-                            ctx.fillRect(px, py, size + 0.5, size + 0.5);
-                        }
-                    }
+                    ctx.restore();
                 }
             }
         }
@@ -195,21 +270,7 @@ export class MapRenderer {
         const biome = cell.biome;
         const hs = cell.hillshade;
 
-        // Check if inside any settlement layout boundary
-        let isSettlementCell = false;
-        if (this.world.settlement_layouts) {
-            for (const layout of this.world.settlement_layouts) {
-                const dist0 = layout.districts[0];
-                if (dist0) {
-                    const tx = dist0.x;
-                    const ty = dist0.y;
-                    if (Math.abs(cell.x - tx) <= 10 && Math.abs(cell.y - ty) <= 10) {
-                        isSettlementCell = true;
-                        break;
-                    }
-                }
-            }
-        }
+        const isSettlementCell = this.isSettlementDetailCell(cell);
 
         for (let sy = 0; sy < N; sy++) {
             for (let sx = 0; sx < N; sx++) {
@@ -288,12 +349,10 @@ export class MapRenderer {
                 if (style !== 'political') {
                     if (hs < 0.49) {
                         const shadowOpacity = (0.5 - hs) * 1.5;
-                        ctx.fillRect(spx, spy, subSize + 0.05, subSize + 0.05);
                         ctx.fillStyle = `rgba(0, 0, 0, ${shadowOpacity})`;
                         ctx.fillRect(spx, spy, subSize + 0.05, subSize + 0.05);
                     } else if (hs > 0.51) {
                         const highlightOpacity = (hs - 0.5) * 1.1;
-                        ctx.fillRect(spx, spy, subSize + 0.05, subSize + 0.05);
                         ctx.fillStyle = `rgba(255, 255, 255, ${highlightOpacity})`;
                         ctx.fillRect(spx, spy, subSize + 0.05, subSize + 0.05);
                     }
@@ -331,8 +390,10 @@ export class MapRenderer {
         ctx.restore();
     }
 
-    drawRoads(ctx) {
+    drawRoads(ctx, alpha = 1.0) {
+        if (alpha <= 0.01) return;
         ctx.save();
+        ctx.globalAlpha *= alpha;
         const size = this.cellSize;
 
         this.world.roads.forEach(road => {
@@ -384,12 +445,13 @@ export class MapRenderer {
         ctx.restore();
     }
 
-    drawPOIs(ctx) {
+    drawPOIs(ctx, alpha = 1.0) {
         const size = this.cellSize;
-        const showPOIs = document.getElementById("poiDebugToggle")?.checked;
+        const showPOIs = this.controls.poiDebug?.checked;
 
         if (showPOIs) {
             ctx.save();
+            ctx.globalAlpha *= alpha;
             this.world.pois.forEach(poi => {
                 const px = poi.x * size + size/2;
                 const py = poi.y * size + size/2;
@@ -418,55 +480,55 @@ export class MapRenderer {
         }
     }
 
-    drawSettlements(ctx) {
-        const zoom = this.viewport.camera.zoom;
-        if (zoom >= 1.5) {
-            this.drawSettlementLayouts(ctx);
-            return;
-        }
-
-        ctx.save();
+    drawSettlements(ctx, macroAlpha = 1.0, microAlpha = 0.0, detailAlpha = 0.0) {
         const size = this.cellSize;
 
-        this.world.settlements.forEach(settle => {
-            const cx = settle.x * size + size/2;
-            const cy = settle.y * size + size/2;
+        if (macroAlpha > 0.01) {
+            ctx.save();
+            ctx.globalAlpha *= macroAlpha;
+            this.world.settlements.forEach(settle => {
+                const cx = settle.x * size + size/2;
+                const cy = settle.y * size + size/2;
 
-            ctx.shadowColor = 'black';
-            ctx.shadowBlur = 5;
+                ctx.shadowColor = 'black';
+                ctx.shadowBlur = 5;
 
-            const isTown = settle.type === 'town';
-            const radius = isTown ? 7.5 : 5.0;
+                const isTown = settle.type === 'town';
+                const radius = isTown ? 7.5 : 5.0;
 
-            ctx.beginPath();
-            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = isTown ? '#ef4444' : '#f59e0b'; // Royal crimson for Town, Amber for Outpost
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+                ctx.fillStyle = isTown ? '#ef4444' : '#f59e0b'; // Royal crimson for Town, Amber for Outpost
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
 
-            // Inner core dot
-            ctx.beginPath();
-            ctx.arc(cx, cy, radius * 0.4, 0, Math.PI * 2);
-            ctx.fillStyle = '#0f172a';
-            ctx.fill();
-        });
-        ctx.restore();
+                // Inner core dot
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius * 0.4, 0, Math.PI * 2);
+                ctx.fillStyle = '#0f172a';
+                ctx.fill();
+            });
+            ctx.restore();
+        }
+
+        this.drawSettlementLayouts(ctx, microAlpha, detailAlpha);
     }
 
-    drawSettlementLayouts(ctx) {
+    drawSettlementLayouts(ctx, microAlpha = 1.0, detailAlpha = 1.0) {
         if (!this.world.settlement_layouts) return;
+        if (microAlpha <= 0.01 && detailAlpha <= 0.01) return;
 
-        const zoom = this.viewport.camera.zoom;
         const size = this.cellSize;
         
         // Grab debug checkbox elements dynamically (safe fallback if they don't exist)
-        const showDistricts = document.getElementById('districtsToggle') ? document.getElementById('districtsToggle').checked : false;
+        const showDistricts = this.controls.districts?.checked ?? false;
 
         // 1. Draw Districts (translucent circles behind)
         if (showDistricts) {
             ctx.save();
+            ctx.globalAlpha *= microAlpha;
             const DISTRICT_COLORS = {
                 town_center: "rgba(239, 68, 68, 0.04)",
                 market: "rgba(245, 158, 11, 0.04)",
@@ -525,6 +587,7 @@ export class MapRenderer {
 
         // 2. Draw Local Roads (casing stroke first, then inner road stroke)
         ctx.save();
+        ctx.globalAlpha *= microAlpha;
         this.world.settlement_layouts.forEach(layout => {
             layout.local_roads.forEach(road => {
                 if (road.path.length < 2) return;
@@ -579,9 +642,10 @@ export class MapRenderer {
         });
         ctx.restore();
 
-        // 3. Draw Buildings (zoom >= 3.0: Settlement view or detail view)
-        if (zoom >= 3.0) {
+        // 3. Draw Buildings with continuous detail alpha.
+        if (detailAlpha > 0.01) {
             ctx.save();
+            ctx.globalAlpha *= detailAlpha;
             ctx.shadowBlur = this.mapStyle === 'antique' ? 0 : 3;
             ctx.shadowColor = 'black';
 
@@ -651,30 +715,17 @@ export class MapRenderer {
         ctx.save();
         const size = this.cellSize;
         const zoom = this.viewport.camera.zoom;
+        const { detailAlpha } = this.getLayerAlphas();
+        ctx.globalAlpha *= 1.0 - detailAlpha * 0.45;
 
-        // Reduce opacity at settlement/building detail zoom levels so they do not block structures
-        if (zoom >= 3.0) {
-            ctx.globalAlpha = 0.55;
-        }
-
-        const showTokenRoutes = document.getElementById('tokenRoutesToggle') ? document.getElementById('tokenRoutesToggle').checked : false;
+        const showTokenRoutes = this.controls.tokenRoutes?.checked ?? false;
 
         this.world.mobile_tokens.forEach(tok => {
             if (tok.route.length === 0) return;
 
-            // Interpolate position along coordinate tracks for premium micro-animations
-            const speed = tok.type === 'caravan' ? 0.08 : 0.15;
-            const rawProgress = this.animFrame * speed;
-            const index = Math.floor(rawProgress) % tok.route.length;
-            const nextIndex = (index + 1) % tok.route.length;
-            const ratio = rawProgress % 1.0;
-
-            const p1 = tok.route[index];
-            const p2 = tok.route[nextIndex];
-
-            // Linear interpolation
-            const tx = p1.x + (p2.x - p1.x) * ratio;
-            const ty = p1.y + (p2.y - p1.y) * ratio;
+            const position = this.getMobileTokenPosition(tok);
+            const tx = position.x;
+            const ty = position.y;
 
             const cx = tx * size + size/2;
             const cy = ty * size + size/2;
@@ -716,9 +767,10 @@ export class MapRenderer {
             ctx.stroke();
             ctx.restore();
 
-            // Tiny initial in center (only show at macro zoom levels, or when hovered/selected zoomed in)
-            if (zoom < 3.0 || isHovered) {
+            const initialAlpha = isHovered ? 1.0 : this.clamp01(1.0 - detailAlpha * 0.85);
+            if (initialAlpha > 0.02) {
                 ctx.save();
+                ctx.globalAlpha *= initialAlpha;
                 ctx.fillStyle = '#ffffff';
                 ctx.font = `bold ${Math.max(4, Math.floor(6.5 / zoom))}px Inter`;
                 ctx.textAlign = 'center';
@@ -730,9 +782,15 @@ export class MapRenderer {
         ctx.restore();
     }
 
+    drawPlayer(ctx) {
+        if (!this.player) return;
+        this.player.draw(ctx, this.cellSize, this.viewport.camera.zoom);
+    }
+
     drawLabels(ctx) {
         const zoom = this.viewport.camera.zoom;
         const size = this.cellSize;
+        const { macroAlpha, microAlpha, detailAlpha } = this.getLayerAlphas();
         
         // Reset label engine log
         this.labelEngine.reset();
@@ -740,32 +798,35 @@ export class MapRenderer {
         const labelCandidates = [];
 
         // 1. Gather Settlement labels
-        this.world.settlements.forEach(settle => {
-            const isTown = settle.type === 'town';
-            // Priorities: settlements are extremely important, especially capitals
-            const priority = isTown ? 90 : 80;
-            
-            const wx = settle.x * size + size/2;
-            const wy = settle.y * size + size/2;
+        if (macroAlpha > 0.01) {
+            this.world.settlements.forEach(settle => {
+                const isTown = settle.type === 'town';
+                // Priorities: settlements are extremely important, especially capitals
+                const priority = isTown ? 90 : 80;
 
-            labelCandidates.push({
-                type: 'settlement',
-                text: settle.name,
-                wx,
-                wy,
-                priority,
-                fontSize: isTown ? 12 : 10,
-                fontFamily: isTown ? 'Cinzel, serif' : 'Inter, sans-serif',
-                fontWeight: isTown ? 'bold' : 'normal',
-                textColor: this.mapStyle === 'antique' ? '#2e1a05' : '#ffffff',
-                shadowColor: this.mapStyle === 'antique' ? 'rgba(235, 220, 185, 0.85)' : 'rgba(0, 0, 0, 0.85)',
-                shadowBlur: 3
+                const wx = settle.x * size + size/2;
+                const wy = settle.y * size + size/2;
+
+                labelCandidates.push({
+                    type: 'settlement',
+                    text: settle.name,
+                    wx,
+                    wy,
+                    priority,
+                    fontSize: isTown ? 12 : 10,
+                    fontFamily: isTown ? 'Cinzel, serif' : 'Inter, sans-serif',
+                    fontWeight: isTown ? 'bold' : 'normal',
+                    textColor: this.mapStyle === 'antique' ? '#2e1a05' : '#ffffff',
+                    shadowColor: this.mapStyle === 'antique' ? 'rgba(235, 220, 185, 0.85)' : 'rgba(0, 0, 0, 0.85)',
+                    shadowBlur: 3,
+                    alpha: macroAlpha
+                });
             });
-        });
+        }
 
         // 2. Gather District labels (if enabled)
-        const showDistrictLabels = document.getElementById('districtLabelsToggle') ? document.getElementById('districtLabelsToggle').checked : false;
-        if (showDistrictLabels && zoom >= 1.5 && this.world.settlement_layouts) {
+        const showDistrictLabels = this.controls.districtLabels?.checked ?? false;
+        if (showDistrictLabels && microAlpha > 0.01 && this.world.settlement_layouts) {
             this.world.settlement_layouts.forEach(layout => {
                 layout.districts.forEach(dist => {
                     const wx = dist.x * size + size/2;
@@ -782,14 +843,15 @@ export class MapRenderer {
                         fontWeight: 'bold',
                         textColor: this.mapStyle === 'antique' ? 'rgba(67, 43, 20, 0.7)' : 'rgba(167, 139, 250, 0.85)',
                         shadowColor: this.mapStyle === 'antique' ? 'rgba(235, 220, 185, 0.8)' : 'rgba(0, 0, 0, 0.8)',
-                        shadowBlur: 2
+                        shadowBlur: 2,
+                        alpha: microAlpha
                     });
                 });
             });
         }
 
-        // 3. Gather Building labels (only if zoom is high enough zoom >= 3.0)
-        if (zoom >= 3.0 && this.world.settlement_layouts) {
+        // 3. Gather Building labels with smooth detail fade-in.
+        if (this.world.settlement_layouts) {
             const MAJOR_BUILDING_TYPES = ["town_hall", "tavern/inn", "shrine", "temple", "blacksmith", "general_store", "granary", "docks", "mill", "fishmonger", "mining_office", "mine_entrance"];
 
             this.world.settlement_layouts.forEach(layout => {
@@ -797,6 +859,13 @@ export class MapRenderer {
                     const isSelected = this.selectedBuilding && this.selectedBuilding.id === bld.id;
                     const isHovered = this.hoveredBuilding && this.hoveredBuilding.id === bld.id;
                     const isMajor = MAJOR_BUILDING_TYPES.includes(bld.type.toLowerCase()) || bld.tier >= 3;
+                    const visibility = this.getBuildingVisibility(bld);
+                    if (detailAlpha <= 0.01 && !isHovered && !isSelected) {
+                        return;
+                    }
+                    if (visibility === 'hidden' && !isHovered && !isSelected) {
+                        return;
+                    }
 
                     // Exclude minor houses/cottages unless hovered or selected
                     if (!isMajor && !isSelected && !isHovered) {
@@ -817,7 +886,7 @@ export class MapRenderer {
                     const cy = py + ph/2;
 
                     // Fit to building footprint check: if text too wide in pixels, we can abbreviate or hide if not hovered/selected
-                    let displayName = bld.name;
+                    let displayName = this.getBuildingDisplayName(bld) || 'Unknown Building';
                     ctx.save();
                     ctx.font = `bold 8px Inter, sans-serif`;
                     const measured = ctx.measureText(displayName).width;
@@ -830,7 +899,7 @@ export class MapRenderer {
                         
                         // For major buildings: abbreviate name if possible, or hide if extremely narrow
                         if (pw < 15) return; // footprint too tiny
-                        displayName = bld.type.replace("_", " ").toUpperCase();
+                        displayName = visibility === 'unknown' ? 'Unknown Building' : bld.type.replace("_", " ").toUpperCase();
                     }
 
                     labelCandidates.push({
@@ -842,9 +911,10 @@ export class MapRenderer {
                         fontSize: isSelected ? 9.5 : (isHovered ? 9.0 : 8.0),
                         fontFamily: 'Inter, sans-serif',
                         fontWeight: (isSelected || isHovered) ? 'bold' : '500',
-                        textColor: isSelected ? '#fbbf24' : (isHovered ? '#60a5fa' : '#ffffff'),
+                        textColor: visibility === 'unknown' ? '#cbd5e1' : (isSelected ? '#fbbf24' : (isHovered ? '#60a5fa' : '#ffffff')),
                         shadowColor: 'rgba(0, 0, 0, 0.95)',
-                        shadowBlur: 3
+                        shadowBlur: 3,
+                        alpha: (isSelected || isHovered) ? 1.0 : detailAlpha
                     });
                 });
             });
@@ -855,17 +925,14 @@ export class MapRenderer {
             const isHovered = this.hoveredToken && this.hoveredToken.id === tok.id;
             if (!isHovered) return;
 
-            // Interpolate position to get its current world coords
-            const speed = tok.type === 'caravan' ? 0.08 : 0.15;
-            const index = Math.floor(this.animFrame * speed) % tok.route.length;
-            const p = tok.route[index] || { x: tok.x, y: tok.y };
+            const p = this.getMobileTokenPosition(tok);
 
             const wx = p.x * size + size/2;
             const wy = p.y * size + size/2;
 
             labelCandidates.push({
                 type: 'token',
-                text: `${tok.type.toUpperCase()}: ${tok.origin_reasons[0] || 'Patrol'}`,
+                text: `${tok.type.toUpperCase()}: ${tok.name || tok.origin || 'Route'}`,
                 wx,
                 wy: wy - 10 / zoom, // Offset above token
                 priority: 98,
@@ -874,7 +941,8 @@ export class MapRenderer {
                 fontWeight: 'bold',
                 textColor: '#34d399',
                 shadowColor: 'rgba(0, 0, 0, 0.95)',
-                shadowBlur: 3
+                shadowBlur: 3,
+                alpha: 1.0
             });
         });
 
@@ -896,6 +964,8 @@ export class MapRenderer {
 
             if (success) {
                 // Draw text in screen-space
+                ctx.save();
+                ctx.globalAlpha *= cand.alpha ?? 1.0;
                 ctx.fillStyle = cand.textColor;
                 ctx.strokeStyle = cand.shadowColor;
                 ctx.lineWidth = cand.shadowBlur;
@@ -905,6 +975,7 @@ export class MapRenderer {
 
                 ctx.strokeText(cand.text, sx, sy);
                 ctx.fillText(cand.text, sx, sy);
+                ctx.restore();
             }
         });
         ctx.restore();

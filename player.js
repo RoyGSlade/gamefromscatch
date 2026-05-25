@@ -1,208 +1,220 @@
 /**
- * player.js - RPG Player Token & Pathfinding Engine
- * Handles A* pathfinding on the grid, smooth movement interpolation,
- * and Fog of War (FOW) tracking based on sight radius.
+ * player.js - Turn-driven party token, pathfinding, and perception state.
  */
 
+import { getTurnCostForCell } from './simulation.js';
+
+function keyFor(x, y) {
+    return `${x},${y}`;
+}
+
 export class Player {
-    constructor(startX, startY, worldMap) {
-        this.world = worldMap;
-        
-        // Logical Grid Position
+    constructor(startX, startY, worldData) {
+        this.world = worldData;
         this.cellX = startX;
         this.cellY = startY;
-        
-        // Visual interpolation position
         this.x = startX;
         this.y = startY;
-        
-        // Pathfinding state
-        this.path = [];
-        this.isMoving = false;
-        this.speed = 4.0; // cells per second
-        
-        // RPG Stats
         this.level = 3;
         this.passivePerception = 14;
-        this.reputation = 50; // Neutral
-        
-        // Fog of War
-        this.fowEnabled = true;
-        this.sightRadius = 8; // cells
-        this.exploredCells = {}; // "x,y" -> true
-        
+        this.reputation = 50;
+        this.sightRadius = 8;
+        this.exploredCells = new Set();
+        this.lastPath = [];
+        this.lastMoveCost = 0;
+        this.roadCells = this.buildRoadCellSet();
+
         this.updateFOW();
     }
 
-    /**
-     * Called every frame to interpolate movement along the path
-     */
-    update(dt) {
-        if (this.path.length > 0) {
-            this.isMoving = true;
-            const target = this.path[0];
-            
-            const dx = target.x - this.x;
-            const dy = target.y - this.y;
-            const dist = Math.hypot(dx, dy);
-            
-            const moveAmt = this.speed * dt;
-            
-            if (dist <= moveAmt) {
-                // Reached node
-                this.x = target.x;
-                this.y = target.y;
-                this.cellX = target.x;
-                this.cellY = target.y;
-                this.path.shift();
-                this.updateFOW();
-            } else {
-                // Move towards node
-                this.x += (dx / dist) * moveAmt;
-                this.y += (dy / dist) * moveAmt;
-            }
-        } else {
-            this.isMoving = false;
-        }
+    buildRoadCellSet() {
+        const cells = new Map();
+        const setRoad = (node, tag) => {
+            const key = keyFor(node.x, node.y);
+            if (cells.get(key) === 'Main Highway') return;
+            cells.set(key, tag);
+        };
+
+        (this.world.roads || []).forEach(road => {
+            const roadType = road.type || road.route_type || road.road_type || road.route_status;
+            const tag = roadType === 'highway' || roadType === 'Main Highway' ? 'Main Highway' : 'Dirt Road';
+            (road.path || []).forEach(node => setRoad(node, tag));
+        });
+        (this.world.settlement_layouts || []).forEach(layout => {
+            (layout.local_roads || []).forEach(road => {
+                (road.path || []).forEach(node => setRoad(node, 'Dirt Road'));
+            });
+        });
+        return cells;
     }
 
-    /**
-     * Computes A* Pathfinding from current position to target (tx, ty)
-     */
-    setTarget(tx, ty) {
-        if (!this.world.getCell(tx, ty)) return;
-        
-        // Basic A* Implementation
-        const startNode = { x: this.cellX, y: this.cellY, g: 0, h: 0, f: 0, parent: null };
-        const endNode = { x: tx, y: ty };
-        
-        const openList = [startNode];
-        const closedList = new Set();
-        const maxIterations = 2000;
-        let iters = 0;
-        
-        while (openList.length > 0 && iters < maxIterations) {
-            iters++;
-            
-            // Get node with lowest f
-            let lowestIndex = 0;
-            for (let i = 0; i < openList.length; i++) {
-                if (openList[i].f < openList[lowestIndex].f) {
-                    lowestIndex = i;
-                }
-            }
-            
-            let current = openList[lowestIndex];
-            
-            // Reached goal?
-            if (current.x === endNode.x && current.y === endNode.y) {
+    getCell(x, y) {
+        if (x < 0 || y < 0 || x >= this.world.width || y >= this.world.height) return null;
+        return this.world.cells[y * this.world.width + x] || null;
+    }
+
+    getTravelCost(x, y) {
+        const cell = this.getCell(x, y);
+        const routeTag = this.roadCells.get(keyFor(x, y)) || null;
+        return getTurnCostForCell(cell, routeTag);
+    }
+
+    findPath(targetX, targetY) {
+        const targetCost = this.getTravelCost(targetX, targetY);
+        if (targetCost >= 999) return [];
+
+        const startKey = keyFor(this.cellX, this.cellY);
+        const targetKey = keyFor(targetX, targetY);
+        const open = [{
+            x: this.cellX,
+            y: this.cellY,
+            g: 0,
+            f: Math.hypot(targetX - this.cellX, targetY - this.cellY),
+            parent: null
+        }];
+        const best = new Map([[startKey, 0]]);
+        const closed = new Set();
+        const neighbors = [
+            [0, -1], [1, 0], [0, 1], [-1, 0],
+            [1, -1], [1, 1], [-1, 1], [-1, -1]
+        ];
+        let iterations = 0;
+
+        while (open.length > 0 && iterations < 8000) {
+            iterations += 1;
+            open.sort((a, b) => a.f - b.f);
+            const current = open.shift();
+            const currentKey = keyFor(current.x, current.y);
+
+            if (currentKey === targetKey) {
                 const path = [];
-                let curr = current;
-                while (curr.parent) {
-                    path.push({x: curr.x, y: curr.y});
-                    curr = curr.parent;
+                let node = current;
+                while (node.parent) {
+                    path.push({ x: node.x, y: node.y });
+                    node = node.parent;
                 }
-                this.path = path.reverse();
-                return;
+                path.reverse();
+                return path;
             }
-            
-            openList.splice(lowestIndex, 1);
-            closedList.add(`${current.x},${current.y}`);
-            
-            // Neighbors
-            const neighbors = [
-                {x: 0, y: -1}, {x: 0, y: 1}, {x: -1, y: 0}, {x: 1, y: 0},
-                {x: -1, y: -1}, {x: 1, y: -1}, {x: -1, y: 1}, {x: 1, y: 1} // Diagonals
-            ];
-            
-            for (const offset of neighbors) {
-                const nx = current.x + offset.x;
-                const ny = current.y + offset.y;
-                const key = `${nx},${ny}`;
-                
-                if (closedList.has(key)) continue;
-                
-                const cell = this.world.getCell(nx, ny);
-                if (!cell) continue;
-                
-                // Determine traversal cost
-                let cost = 1.0;
-                if (cell.biome.isWater) cost = 999; // Impassable for now
-                if (cell.biome.name === 'Craggy Peaks' || cell.biome.name === 'Frozen Peaks') cost = 999;
-                if (cell.biome.name === 'Dense Forest' || cell.biome.name === 'Murky Swamp') cost = 3.0;
-                if (cell.biome.name === 'Rolling Hills') cost = 2.0;
-                if (offset.x !== 0 && offset.y !== 0) cost *= 1.414; // Diagonal
-                
-                if (cost >= 999) continue;
-                
-                const gScore = current.g + cost;
-                
-                let neighborNode = openList.find(n => n.x === nx && n.y === ny);
-                
-                if (!neighborNode) {
-                    neighborNode = { x: nx, y: ny, parent: current };
-                    neighborNode.g = gScore;
-                    neighborNode.h = Math.hypot(endNode.x - nx, endNode.y - ny); // Heuristic
-                    neighborNode.f = neighborNode.g + neighborNode.h;
-                    openList.push(neighborNode);
-                } else if (gScore < neighborNode.g) {
-                    neighborNode.g = gScore;
-                    neighborNode.f = neighborNode.g + neighborNode.h;
-                    neighborNode.parent = current;
-                }
+
+            if (closed.has(currentKey)) continue;
+            closed.add(currentKey);
+
+            for (const [dx, dy] of neighbors) {
+                const nx = current.x + dx;
+                const ny = current.y + dy;
+                const nKey = keyFor(nx, ny);
+                if (closed.has(nKey)) continue;
+
+                const baseCost = this.getTravelCost(nx, ny);
+                if (baseCost >= 999) continue;
+
+                const diagonalMultiplier = dx !== 0 && dy !== 0 ? 1.4 : 1;
+                const g = current.g + baseCost * diagonalMultiplier;
+                if (best.has(nKey) && best.get(nKey) <= g) continue;
+
+                best.set(nKey, g);
+                open.push({
+                    x: nx,
+                    y: ny,
+                    g,
+                    f: g + Math.hypot(targetX - nx, targetY - ny),
+                    parent: current
+                });
             }
         }
-        
-        console.warn("A* failed to find path or max iterations reached.");
-        this.path = []; // Failed to find path
+
+        return [];
     }
 
-    /**
-     * Clears Fog of War around the player
-     */
+    moveTo(targetX, targetY) {
+        const path = this.findPath(targetX, targetY);
+        if (path.length === 0) {
+            return {
+                ok: false,
+                cost: 999,
+                steps: 0,
+                path: []
+            };
+        }
+
+        let totalCost = 0;
+        path.forEach(step => {
+            totalCost += this.getTravelCost(step.x, step.y);
+        });
+
+        const destination = path[path.length - 1];
+        this.cellX = destination.x;
+        this.cellY = destination.y;
+        this.x = destination.x;
+        this.y = destination.y;
+        this.lastPath = path;
+        this.lastMoveCost = totalCost;
+        this.updateFOW();
+
+        return {
+            ok: true,
+            cost: totalCost,
+            steps: path.length,
+            path
+        };
+    }
+
     updateFOW() {
-        if (!this.fowEnabled) return;
-        
-        const r = this.sightRadius;
-        const rSq = r * r;
-        
-        for (let y = this.cellY - r; y <= this.cellY + r; y++) {
-            for (let x = this.cellX - r; x <= this.cellX + r; x++) {
-                if (x < 0 || x >= this.world.width || y < 0 || y >= this.world.height) continue;
-                
+        const radiusSq = this.sightRadius * this.sightRadius;
+        for (let y = this.cellY - this.sightRadius; y <= this.cellY + this.sightRadius; y++) {
+            for (let x = this.cellX - this.sightRadius; x <= this.cellX + this.sightRadius; x++) {
+                if (x < 0 || y < 0 || x >= this.world.width || y >= this.world.height) continue;
                 const dx = x - this.cellX;
                 const dy = y - this.cellY;
-                if ((dx*dx + dy*dy) <= rSq) {
-                    this.exploredCells[`${x},${y}`] = true;
+                if (dx * dx + dy * dy <= radiusSq) {
+                    this.exploredCells.add(keyFor(x, y));
                 }
             }
         }
     }
 
-    /**
-     * Draw the player token (a glowing sphere or icon)
-     */
-    draw(ctx, cellSize) {
+    isCellExplored(x, y) {
+        return this.exploredCells.has(keyFor(x, y));
+    }
+
+    isBuildingObserved(building) {
+        for (let y = building.y; y < building.y + building.height; y++) {
+            for (let x = building.x; x < building.x + building.width; x++) {
+                if (this.isCellExplored(x, y)) return true;
+            }
+        }
+        return false;
+    }
+
+    getBuildingVisibility(building) {
+        if (!this.isBuildingObserved(building)) return 'hidden';
+        const threshold = building.obscurity_rating ?? 0;
+        return this.passivePerception >= threshold ? 'revealed' : 'unknown';
+    }
+
+    draw(ctx, cellSize, zoom) {
         const px = this.x * cellSize + cellSize / 2;
         const py = this.y * cellSize + cellSize / 2;
-        
+        const desiredScreenRadius = 8;
+        const worldRadius = desiredScreenRadius / zoom;
+
         ctx.save();
-        ctx.shadowColor = '#4cc9f0';
-        ctx.shadowBlur = 10;
-        
-        // Inner core
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 8 / zoom;
+        ctx.fillStyle = '#f8fafc';
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 2 / zoom;
+
         ctx.beginPath();
-        ctx.arc(px, py, cellSize * 0.4, 0, Math.PI * 2);
-        ctx.fillStyle = '#fff';
+        ctx.arc(px, py, worldRadius, 0, Math.PI * 2);
         ctx.fill();
-        
-        // Outer ring
-        ctx.beginPath();
-        ctx.arc(px, py, cellSize * 0.6, 0, Math.PI * 2);
-        ctx.strokeStyle = '#4cc9f0';
-        ctx.lineWidth = 2.0;
         ctx.stroke();
-        
+
+        ctx.beginPath();
+        ctx.arc(px, py, worldRadius * 1.55, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+        ctx.stroke();
         ctx.restore();
     }
 }

@@ -104,7 +104,7 @@ def test_house_scaling():
         # Houses abstractly scaled by population for towns: max(8, min(20, pop // 250))
         houses = [b for b in layout["buildings"] if b["type"] == "house"]
         
-        if settlement["type"] == "town":
+        if settlement["type"] in ("town", "capital"):
             expected_houses = max(8, min(20, settlement["population"] // 250))
             assert len(houses) == expected_houses
         else:

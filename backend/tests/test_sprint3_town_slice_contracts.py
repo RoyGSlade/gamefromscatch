@@ -176,7 +176,8 @@ def test_town_slice_causality_rules(seed):
                 assert touches_water(building, water_map, {"ocean", "lake"})
 
             if building_type in {"mine_entrance", "mining_office"}:
-                assert any(resource in settlement["resources"] for resource in ("Iron Ore", "Gold"))
+                mineable = {"Iron Ore", "Gold", "Copper", "Coal", "Silver", "Mithril", "Arcane Crystals"}
+                assert any(resource in mineable for resource in settlement["resources"])
 
             if building_type in {"tavern", "inn", "tavern/inn"}:
                 assert settlement["population"] > 0 or layout["local_roads"]
@@ -193,8 +194,17 @@ def test_town_slice_causality_rules(seed):
 
 
 def test_active_frontend_does_not_import_legacy_authoritative_generators():
-    app_js = Path("app.js").read_text(encoding="utf-8")
-    renderer_js = Path("renderer.js").read_text(encoding="utf-8")
+    root_path = Path(__file__).parents[2]
+    app_js_path = root_path / "app.js"
+    if not app_js_path.exists():
+        app_js_path = Path("app.js")
+        
+    renderer_js_path = root_path / "renderer.js"
+    if not renderer_js_path.exists():
+        renderer_js_path = Path("renderer.js")
+
+    app_js = app_js_path.read_text(encoding="utf-8")
+    renderer_js = renderer_js_path.read_text(encoding="utf-8")
 
     active_bundle = app_js + "\n" + renderer_js
     assert "from './world.js'" not in active_bundle

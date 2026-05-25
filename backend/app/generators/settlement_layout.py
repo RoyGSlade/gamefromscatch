@@ -177,7 +177,7 @@ def generate_settlement_layout(
     is_coastal = any(water_type[y, x] in ["ocean", "lake"] for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1))
     has_river = any(water_type[y, x] == "river" for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1))
     
-    if settlement_type == "town":
+    if settlement_type in ("town", "capital"):
         # Town districts
         districts.append({
             "id": f"dist_{settlement_id}_center", "settlement_id": settlement_id, "type": "town_center",
@@ -260,42 +260,57 @@ def generate_settlement_layout(
     # Establish building proposals list based on settlement type
     proposals = []
     
-    if settlement_type == "town":
-        proposals.append(("dist_town_01_center", "town_hall", "Town Hall", "Administrative keep and court.", ["Sovereign presence."], [], ["lumber_planks"], ["tax_revenue"], 2, 2, 3))
-        proposals.append(("dist_town_01_center", "tavern/inn", "The Prancing Griffin", "Local tavern providing rest and drinks.", ["Social hub."], ["ale", "bread"], ["gold"], ["waste"], 1, 2, 2))
-        proposals.append(("dist_town_01_market", "general_store", "Realm Imports", "Merchant depot trading supplies.", ["Trade routing."], ["wool", "grain"], ["goods"], ["gold"], 1, 1, 2))
-        proposals.append(("dist_town_01_craft", "blacksmith", "Iron Hearth Forge", "Smithy producing heavy tools.", ["Sub-surface ores nearby."], ["iron_ingots", "coal"], ["iron_tools"], ["ash"], 2, 1, 3))
-        proposals.append(("dist_town_01_religious", "shrine", "Shrine of Eld", "Sacred clearing for meditation.", ["Ancient sacred clearing."], [], ["devotion"], ["incense"], 1, 1, 1))
-        proposals.append(("dist_town_01_storage", "granary", "Royal Granary", "Food stockpiling storehouse.", ["Farmlands irrigation."], ["wheat_flour"], ["stockpile"], ["waste"], 1, 2, 2))
+    if settlement_type in ("town", "capital"):
+        proposals.append((f"dist_{settlement_id}_center", "town_hall", "Town Hall", "Administrative keep and court.", ["Sovereign presence."], [], ["lumber_planks"], ["tax_revenue"], 2, 2, 3))
+        proposals.append((f"dist_{settlement_id}_center", "tavern/inn", "The Prancing Griffin", "Local tavern providing rest and drinks.", ["Social hub."], ["ale", "bread"], ["gold"], ["waste"], 1, 2, 2))
+        proposals.append((f"dist_{settlement_id}_market", "general_store", "Realm Imports", "Merchant depot trading supplies.", ["Trade routing."], ["wool", "grain"], ["goods"], ["gold"], 1, 1, 2))
+        proposals.append((f"dist_{settlement_id}_craft", "blacksmith", "Iron Hearth Forge", "Smithy producing heavy tools.", ["Sub-surface ores nearby."], ["iron_ingots", "coal"], ["iron_tools"], ["ash"], 2, 1, 3))
+        proposals.append((f"dist_{settlement_id}_religious", "shrine", "Shrine of Eld", "Sacred clearing for meditation.", ["Ancient sacred clearing."], [], ["devotion"], ["incense"], 1, 1, 1))
+        proposals.append((f"dist_{settlement_id}_storage", "granary", "Royal Granary", "Food stockpiling storehouse.", ["Farmlands irrigation."], ["wheat_flour"], ["stockpile"], ["waste"], 1, 2, 2))
         
         # Contextual buildings
         if has_river and "Timber" in settlement["resources"]:
-            proposals.append(("dist_town_01_river_industry", "sawmill", "Riverfront Sawmill", "Water-powered sawing engine.", ["Rushing river currents.", "Dense timber forests."], ["prime_timber"], ["lumber_planks"], ["sawdust"], 2, 2, 2))
+            proposals.append((f"dist_{settlement_id}_river_industry", "sawmill", "Riverfront Sawmill", "Water-powered sawing engine.", ["Rushing river currents.", "Dense timber forests."], ["prime_timber"], ["lumber_planks"], ["sawdust"], 2, 2, 2))
         if "Grain" in settlement["resources"]:
-            proposals.append(("dist_town_01_river_industry" if has_river else "dist_town_01_center", "mill", "Tethered Gristmill", "Grain milling facility.", ["Farmland crops."], ["grain_harvest"], ["wheat_flour"], ["chaff"], 1, 1, 2))
+            proposals.append((f"dist_{settlement_id}_river_industry" if has_river else f"dist_{settlement_id}_center", "mill", "Tethered Gristmill", "Grain milling facility.", ["Farmland crops."], ["grain_harvest"], ["wheat_flour"], ["chaff"], 1, 1, 2))
         if is_coastal:
-            proposals.append(("dist_town_01_docks", "docks", "Sovereign Wharf", "Harbor docks and slips.", ["Navigable water."], [], ["mooring_slips"], ["shipments"], 2, 3, 2))
-            proposals.append(("dist_town_01_docks", "fishmonger", "The Salty Net", "Curing and trade store.", ["Fish nodes nearby."], ["fresh_catch"], ["salted_fish"], ["offal"], 1, 1, 2))
+            proposals.append((f"dist_{settlement_id}_docks", "docks", "Sovereign Wharf", "Harbor docks and slips.", ["Navigable water."], [], ["mooring_slips"], ["shipments"], 2, 3, 2))
+            proposals.append((f"dist_{settlement_id}_docks", "fishmonger", "The Salty Net", "Curing and trade store.", ["Fish nodes nearby."], ["fresh_catch"], ["salted_fish"], ["offal"], 1, 1, 2))
             
         # Houses abstractly scaled by population: e.g. population / 250 (range 8 to 20)
         num_houses = max(8, min(20, settlement["population"] // 250))
         for h_idx in range(num_houses):
-            proposals.append(("dist_town_01_residential", f"house", f"Cottage {h_idx+1}", "Commoner residential housing.", ["Settlement growth."], ["bread"], [], ["waste"], 1, 1, 1))
+            proposals.append((f"dist_{settlement_id}_residential", f"house", f"Cottage {h_idx+1}", "Commoner residential housing.", ["Settlement growth."], ["bread"], [], ["waste"], 1, 1, 1))
     else:
         # Outpost proposals
         is_logging = "logging" in settlement_type or "lumber" in settlement_type or "Timber" in settlement["resources"]
-        main_type = "logging_yard" if is_logging else "mine_entrance"
-        main_name = "Whispering Logger Yard" if is_logging else "Deep Stone Shaft"
-        main_purpose = "Felling prime timber logs." if is_logging else "Extracting high-yield iron/gold veins."
-        main_reasons = ["Ancient groves."] if is_logging else ["Craggy subterranean veins."]
-        main_out = "prime_timber" if is_logging else "raw_ore"
+        is_fishing = "fishing" in settlement_type or "Fish" in settlement["resources"]
         
-        proposals.append(("dist_outpost_01_extraction", main_type, main_name, main_purpose, main_reasons, [], [main_out], [], 2, 2, 2))
-        proposals.append(("dist_outpost_01_worker_camp", "worker_bunkhouse", "Laborer Bunkhouse", "Bunks for extraction crew.", ["Worker lodging."], ["rations"], [], ["waste"], 1, 2, 1))
-        proposals.append(("dist_outpost_01_storage", "storage_shed", "Secure Supply Lockup", "Supply yard and stockpile.", ["Extraction flow."], [main_out], ["cargo_wagons"], [], 1, 2, 2))
-        proposals.append(("dist_outpost_01_storage", "tool_repair_shed", "Grindstone Yard", "Tool sharpening hut.", ["Durable tools required."], ["iron_tools"], ["sharpened_axes" if is_logging else "honed_picks"], ["metal_filings"], 1, 1, 1))
-        proposals.append(("dist_outpost_01_overseer", "overseer_office", "Overseer Quarters", "Logistical control room.", ["State administrative mandate."], [], ["logistics_record"], [], 1, 1, 2))
-        proposals.append(("dist_outpost_01_extraction", "watch_post", "Sentry Turret", "Tall wooden guard lookout.", ["Borderlands security."], [], ["perception_guard"], [], 1, 1, 1))
+        if is_fishing:
+            main_type = "fishery"
+            main_name = "Tidal Fishery"
+            main_purpose = "Harvesting fresh catch from the surrounding waters."
+            main_reasons = ["Rich fishing grounds."]
+            main_out = "fresh_catch"
+        elif is_logging:
+            main_type = "logging_yard"
+            main_name = "Whispering Logger Yard"
+            main_purpose = "Felling prime timber logs."
+            main_reasons = ["Ancient groves."]
+            main_out = "prime_timber"
+        else:
+            main_type = "mine_entrance"
+            main_name = "Deep Stone Shaft"
+            main_purpose = "Extracting high-yield ore veins."
+            main_reasons = ["Craggy subterranean veins."]
+            main_out = "raw_ore"
+        
+        proposals.append((f"dist_{settlement_id}_extraction", main_type, main_name, main_purpose, main_reasons, [], [main_out], [], 2, 2, 2))
+        proposals.append((f"dist_{settlement_id}_worker_camp", "worker_bunkhouse", "Laborer Bunkhouse", "Bunks for extraction crew.", ["Worker lodging."], ["rations"], [], ["waste"], 1, 2, 1))
+        proposals.append((f"dist_{settlement_id}_storage", "storage_shed", "Secure Supply Lockup", "Supply yard and stockpile.", ["Extraction flow."], [main_out], ["cargo_wagons"], [], 1, 2, 2))
+        proposals.append((f"dist_{settlement_id}_storage", "tool_repair_shed", "Grindstone Yard", "Tool sharpening hut.", ["Durable tools required."], ["iron_tools"], ["sharpened_axes" if is_logging else "honed_picks"], ["metal_filings"], 1, 1, 1))
+        proposals.append((f"dist_{settlement_id}_overseer", "overseer_office", "Overseer Quarters", "Logistical control room.", ["State administrative mandate."], [], ["logistics_record"], [], 1, 1, 2))
+        proposals.append((f"dist_{settlement_id}_extraction", "watch_post", "Sentry Turret", "Tall wooden guard lookout.", ["Borderlands security."], [], ["perception_guard"], [], 1, 1, 1))
         
     # Execute Placement Search spiral around district centers
     for p in proposals:

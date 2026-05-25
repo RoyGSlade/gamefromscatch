@@ -99,6 +99,13 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
                 "resources": resource_grid[y][x]
             })
             
+    # 5.5. Generate Settlement Layouts
+    from .settlement_layout import generate_settlement_layout
+    settlement_layouts = []
+    for s in settlements_list:
+        layout = generate_settlement_layout(s, elevation, biomes, water_type, roads, width, height)
+        settlement_layouts.append(layout)
+        
     return {
         "seed": seed_str,
         "width": width,
@@ -110,5 +117,6 @@ def generate_full_world_slice(seed_str: str) -> Dict[str, Any]:
         "bridges": bridges,
         "resources": resources_list,
         "pois": pois,
-        "mobile_tokens": mobile_tokens
+        "mobile_tokens": mobile_tokens,
+        "settlement_layouts": settlement_layouts
     }

@@ -138,6 +138,9 @@ function setupMouseListeners() {
             updateStatusBar();
         }
     }, { passive: false });
+
+    // Prevent default browser context menu on right-click to avoid annoying Chrome "Copy image" popups
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 function handleHover(mx, my) {

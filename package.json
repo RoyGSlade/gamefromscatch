@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Procedural 2D Fantasy Map Generator featuring detailed organic city grids and seamless camera zoom levels.",
   "scripts": {
-    "dev": "npx -y vite --port 3000 --open"
+    "dev": "npx -y vite --port 3000 --open",
+    "start": "powershell -ExecutionPolicy Bypass -File ./run.ps1"
   },
   "keywords": [
     "procedural",

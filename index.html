@@ -57,10 +57,14 @@
         <div class="sidebar-section">
             <h2 class="section-title">Cartographic Styles</h2>
             <div class="style-toggle-container">
-                <button class="style-btn active" data-style="antique">Antique Parchment</button>
+                <button class="style-btn" data-style="antique">Antique Parchment</button>
                 <button class="style-btn" data-style="political">Political Borders</button>
-                <button class="style-btn" data-style="physical">Physical Relief</button>
+                <button class="style-btn active" data-style="physical">Physical Relief</button>
                 <button class="style-btn" data-style="biomes">Ecological Biomes</button>
+            </div>
+            <div class="control-group" style="margin-top: 16px; display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="poiDebugToggle" style="width: auto; margin: 0;">
+                <label for="poiDebugToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show POIs (Debug)</label>
             </div>
         </div>
 

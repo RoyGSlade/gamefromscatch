@@ -1,16 +1,11 @@
 /**
- * app.js - Main Application Coordinator (RPG Engine)
- * Orchestrates Canvas events, Simulation loops, Player movement,
- * and AI bridge interactions.
+ * app.js - Main Application Coordinator
+ * Fetches the deterministic map JSON from the FastAPI backend
+ * and wires up mouse pans, zooms, inspections, and style toggles.
  */
-import { WorldMap } from './world.js';
 import { MapRenderer } from './renderer.js';
-import { Player } from './player.js';
-import { Simulation } from './simulation.js';
-import { AIBridge } from './aiBridge.js';
-import { LOD_TIERS } from './viewport.js';
 
-// Dom Elements
+// DOM Elements
 const canvas = document.getElementById('mapCanvas');
 const seedInput = document.getElementById('worldSeed');
 const regenerateBtn = document.getElementById('regenerateBtn');
@@ -20,41 +15,32 @@ const cityListContainer = document.getElementById('registryCityList');
 const inspectorPanel = document.getElementById('inspectorPanel');
 const inspectorContent = document.getElementById('inspectorContent');
 const closeInspectorBtn = document.getElementById('closeInspectorBtn');
+const poiDebugToggle = document.getElementById('poiDebugToggle');
 
 // Status Bar Elements
 const lodText = document.getElementById('lodValue');
 const territoryText = document.getElementById('territoryValue');
 const biomeText = document.getElementById('biomeValue');
 const coordsText = document.getElementById('coordsValue');
+const clockDisplay = document.getElementById('timeDisplay');
+const dayPhaseDisplay = document.getElementById('dayPhaseDisplay');
 
-// Global Application State
-let world = null;
-let renderer = null;
-let player = null;
-let simulation = null;
-let aiBridge = null;
-
+// Application State
+let world = null;       // Holds fetched JSON map state
+let renderer = null;    // MapRenderer instance
 let hoveredCity = null;
-let hoveredBuilding = null;
 let selectedCity = null;
-
-let tooltipEl = null;
-let cameraTween = null;
-let lastFrameTime = performance.now();
-
-// Mouse Drag State
 let isDragging = false;
 let startX = 0;
 let startY = 0;
+let lastFrameTime = performance.now();
 
 function init() {
     setupCanvas();
-    createTooltip();
-    
-    simulation = new Simulation();
     
     // Seed and generate initial world
-    generateNewWorld(seedInput.value || 'Eldoria');
+    const seed = seedInput.value || 'Eldoria';
+    generateNewWorld(seed);
 
     window.addEventListener('resize', handleResize);
     setupMouseListeners();
@@ -69,58 +55,59 @@ function setupCanvas() {
     if (renderer) renderer.viewport.resize(canvas.width, canvas.height);
 }
 
-function createTooltip() {
-    tooltipEl = document.createElement('div');
-    tooltipEl.className = 'city-tooltip';
-    tooltipEl.style.display = 'none';
-    document.body.appendChild(tooltipEl);
-}
-
 function handleResize() {
     setupCanvas();
     if (renderer) renderer.draw();
 }
 
-function generateNewWorld(seed) {
-    const numCountries = parseInt(document.getElementById('countriesCount').value || 6, 10);
-    const numCities = parseInt(document.getElementById('citiesCount').value || 32, 10);
-    
-    world = new WorldMap(256, 256, seed);
-    world.generate(numCountries, numCities);
-    
-    renderer = new MapRenderer(canvas, world);
-    
-    // Drop player at capital of country 0
-    const startCity = world.cities.find(c => c.isCapital);
-    player = new Player(startCity.x, startCity.y, world);
-    renderer.setPlayer(player);
-    
-    aiBridge = new AIBridge(player, simulation, world);
-
-    // Reset UI selections
-    hoveredCity = null;
-    selectedCity = null;
-    closeInspector();
-    populateCityList(world.cities);
-    
-    renderer.draw();
+/**
+ * Fetches deterministic world generation data from the FastAPI backend.
+ */
+async function generateNewWorld(seed) {
+    try {
+        console.log(`Requesting world slice for seed: "${seed}"...`);
+        const response = await fetch(`http://127.0.0.1:8000/api/world/generate?seed=${encodeURIComponent(seed)}`);
+        
+        if (!response.ok) {
+            throw new Error(`Server returned status: ${response.status}`);
+        }
+        
+        world = await response.json();
+        console.log("Successfully loaded world slice:", world);
+        
+        renderer = new MapRenderer(canvas, world);
+        
+        // Reset selections
+        hoveredCity = null;
+        selectedCity = null;
+        closeInspector();
+        populateCityList(world.settlements);
+        
+        renderer.draw();
+        
+    } catch (err) {
+        console.error("Failed to fetch world from backend. Make sure the backend server is running on port 8000.", err);
+        alert("Could not connect to the backend server. Please run npm start or double-click run.bat!");
+    }
 }
 
-/* --- Camera Navigation (Pan & Zoom) --- */
+/* --- Mouse Event Listeners for Cartographic Navigation --- */
 function setupMouseListeners() {
     canvas.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return; // left click only
+        if (e.button !== 0) return; // Left click only
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
-        cameraTween = null;
     });
 
     canvas.addEventListener('mousemove', (e) => {
         if (isDragging) {
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
-            renderer.viewport.pan(dx, dy);
+            if (renderer) {
+                renderer.viewport.pan(dx, dy);
+                renderer.draw();
+            }
             startX = e.clientX;
             startY = e.clientY;
             canvas.style.cursor = 'grabbing';
@@ -131,265 +118,214 @@ function setupMouseListeners() {
 
     canvas.addEventListener('mouseup', (e) => {
         if (isDragging) {
-            // Check if it was a tiny drag (basically a click)
-            const dist = Math.hypot(e.clientX - startX, e.clientY - startY);
-            if (dist < 3) handleClick(e.clientX, e.clientY);
+            isDragging = false;
+        } else {
+            handleClick(e.clientX, e.clientY);
         }
-        isDragging = false;
-        canvas.style.cursor = hoveredCity || hoveredBuilding ? 'pointer' : 'grab';
-    });
-
-    canvas.addEventListener('click', (e) => {
-        if (!isDragging) handleClick(e.clientX, e.clientY);
+        canvas.style.cursor = hoveredCity ? 'pointer' : 'grab';
     });
 
     canvas.addEventListener('mouseleave', () => {
         isDragging = false;
-        tooltipEl.style.display = 'none';
     });
 
-    // Zooming at cursor target
+    // Zooming focused on mouse cursor coordinates
     canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
-        renderer.viewport.zoomAt(e.clientX, e.clientY, e.deltaY);
-        cameraTween = null;
-        updateStatusBar();
-    }, { passive: false });
-
-    // Handle double-clicking to fly into city
-    canvas.addEventListener('dblclick', () => {
-        if (hoveredCity) {
-            flyTo(hoveredCity.x * renderer.cellSize, hoveredCity.y * renderer.cellSize, 10.0);
+        if (renderer) {
+            renderer.viewport.zoomAt(e.clientX, e.clientY, e.deltaY);
+            renderer.draw();
+            updateStatusBar();
         }
-    });
+    }, { passive: false });
 }
 
 function handleHover(mx, my) {
+    if (!renderer || !world) return;
+    
     const { cellX, cellY, wx, wy } = renderer.screenToWorld(mx, my);
     updateStatusBar(cellX, cellY);
 
-    const lod = renderer.viewport.currentLOD;
     hoveredCity = null;
-    hoveredBuilding = null;
-    let tooltipText = '';
+    const threshold = 18 / renderer.viewport.camera.zoom;
 
-    if (lod === LOD_TIERS.CITY && selectedCity) {
-        // We are inspecting a city, check for buildings
-        const planner = renderer.getCityPlanner(selectedCity);
-        const cityWorldX = selectedCity.x * renderer.cellSize;
-        const cityWorldY = selectedCity.y * renderer.cellSize;
-        const scaleFactor = 160 / 1000;
-        
-        for (const b of planner.buildings) {
-            const bx = cityWorldX + (b.x - 500) * scaleFactor;
-            const by = cityWorldY + (b.y - 500) * scaleFactor;
-            const bw = b.w * scaleFactor;
-            const bh = b.h * scaleFactor;
-            
-            // simple AABB collision check
-            if (wx >= bx - bw/2 && wx <= bx + bw/2 && wy >= by - bh/2 && wy <= by + bh/2) {
-                hoveredBuilding = b;
-                if (player.passivePerception >= b.obscurityRating) {
-                    tooltipText = `<strong>${b.purpose}</strong><br><span style="font-size:0.7rem; color:var(--gold);">District: ${b.district} | Tier: ${b.tier}</span>`;
-                } else {
-                    tooltipText = `<strong>Unknown Building</strong>`;
-                }
-                break;
-            }
-        }
-    } else {
-        // World Map level - check for cities
-        const threshold = 18 / renderer.viewport.camera.zoom;
-        for (const city of world.cities) {
-            const cx = city.x * renderer.cellSize;
-            const cy = city.y * renderer.cellSize;
-            if (Math.hypot(wx - cx, wy - cy) < Math.max(14, threshold)) {
-                hoveredCity = city;
-                const countryName = city.countryId !== -1 ? world.countries[city.countryId].baseName : 'Neutral Territory';
-                tooltipText = `<strong>${city.name}</strong><br><span style="font-size:0.7rem; color:var(--text-muted);">${countryName}</span>`;
-                break;
-            }
+    // Check if hovering over any settlements
+    for (const settle of world.settlements) {
+        const cx = settle.x * renderer.cellSize;
+        const cy = settle.y * renderer.cellSize;
+        if (Math.hypot(wx - cx, wy - cy) < Math.max(14, threshold)) {
+            hoveredCity = settle;
+            break;
         }
     }
 
-    if (hoveredBuilding || hoveredCity) {
-        canvas.style.cursor = 'pointer';
-        tooltipEl.innerHTML = tooltipText;
-        tooltipEl.style.left = `${mx}px`;
-        tooltipEl.style.top = `${my - 20}px`;
-        tooltipEl.style.display = 'block';
-    } else {
-        canvas.style.cursor = 'grab';
-        tooltipEl.style.display = 'none';
-    }
+    canvas.style.cursor = hoveredCity ? 'pointer' : 'grab';
 }
 
 function handleClick(mx, my) {
-    const { cellX, cellY } = renderer.screenToWorld(mx, my);
-    const lod = renderer.viewport.currentLOD;
-
-    if (lod === LOD_TIERS.CITY && hoveredBuilding && selectedCity) {
-        // Player clicked an NPC building to interact
-        aiBridge.openInteraction(selectedCity, hoveredBuilding);
-    } else if (hoveredCity) {
-        // Open Inspector for City
+    if (!renderer || !world) return;
+    if (hoveredCity) {
         inspectCity(hoveredCity);
-    } else if (lod < LOD_TIERS.CITY) {
-        // Pathfind player to cell
-        player.setTarget(cellX, cellY);
+    } else {
+        closeInspector();
     }
 }
 
 function updateStatusBar(cellX, cellY) {
+    if (!renderer || !world) return;
+
     if (cellX !== undefined && cellY !== undefined) {
         if (cellX >= 0 && cellX < world.width && cellY >= 0 && cellY < world.height) {
             coordsText.textContent = `${cellX}, ${cellY}`;
-            const cell = world.getCell(cellX, cellY);
-            biomeText.textContent = cell.biome.name;
-            
-            if (cell.countryId !== -1 && world.countries[cell.countryId]) {
-                territoryText.textContent = world.countries[cell.countryId].name;
-                territoryText.style.color = world.countries[cell.countryId].color;
-            } else {
-                territoryText.textContent = cell.elevation < world.seaLevel ? 'Abyssal Oceans' : 'Wild Neutral Lands';
-                territoryText.style.color = 'var(--text-muted)';
+            const cell = world.cells[cellY * world.width + cellX];
+            if (cell) {
+                biomeText.textContent = cell.biome;
+                
+                if (cell.water_type !== 'none') {
+                    territoryText.textContent = `Water (${cell.water_type.toUpperCase()})`;
+                    territoryText.style.color = '#38bdf8';
+                } else {
+                    territoryText.textContent = 'Wild Frontier';
+                    territoryText.style.color = 'var(--gold)';
+                }
             }
         }
     }
 
     const zoom = renderer.viewport.camera.zoom;
-    if (zoom < 1.0) lodText.textContent = `Continent`;
-    else if (zoom < 3.5) lodText.textContent = `Country`;
-    else if (zoom < 7.5) lodText.textContent = `Province`;
-    else lodText.textContent = `City Survey`;
+    if (zoom < 0.6) lodText.textContent = `Continent`;
+    else if (zoom < 2.0) lodText.textContent = `Province`;
+    else if (zoom < 5.0) lodText.textContent = `Settlement Survey`;
+    else lodText.textContent = `Detail Survey`;
 }
 
 function setupUIListeners() {
-    regenerateBtn.addEventListener('click', () => generateNewWorld(seedInput.value.trim() || 'Eldoria'));
-    seedInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') generateNewWorld(seedInput.value.trim());
+    regenerateBtn.addEventListener('click', () => {
+        const seed = seedInput.value.trim();
+        if (seed) generateNewWorld(seed);
     });
-    document.getElementById('countriesCount').addEventListener('input', (e) => document.getElementById('countriesVal').textContent = e.target.value);
-    document.getElementById('citiesCount').addEventListener('input', (e) => document.getElementById('citiesVal').textContent = e.target.value);
+
+    seedInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const seed = seedInput.value.trim();
+            if (seed) generateNewWorld(seed);
+        }
+    });
 
     styleButtons.forEach(btn => {
         btn.addEventListener('click', () => {
             styleButtons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            renderer.setStyle(btn.dataset.style);
+            if (renderer) renderer.setStyle(btn.dataset.style);
         });
     });
 
+    poiDebugToggle.addEventListener('change', () => {
+        if (renderer) renderer.draw();
+    });
+
     searchInput.addEventListener('input', (e) => {
+        if (!world) return;
         const query = e.target.value.toLowerCase().trim();
-        populateCityList(world.cities.filter(c => c.name.toLowerCase().includes(query)));
+        populateCityList(world.settlements.filter(s => s.name.toLowerCase().includes(query)));
     });
 
     closeInspectorBtn.addEventListener('click', closeInspector);
 }
 
-function populateCityList(cities) {
+function populateCityList(settlements) {
     cityListContainer.innerHTML = '';
-    if (cities.length === 0) return;
+    if (!settlements || settlements.length === 0) return;
 
-    cities.forEach(city => {
+    settlements.forEach(settle => {
         const item = document.createElement('div');
-        item.className = `city-item ${city.isCapital ? 'capital' : ''} ${selectedCity === city ? 'active' : ''}`;
+        item.className = `city-item ${settle.type === 'town' ? 'capital' : ''} ${selectedCity === settle ? 'active' : ''}`;
+        
+        const label = settle.type === 'town' ? 'Town' : 'Outpost';
         item.innerHTML = `
-            <span class="city-item-name">${city.name}</span>
-            <span class="city-item-tag">${city.isCapital ? 'Capital' : 'Town'}</span>
+            <span class="city-item-name">${settle.name}</span>
+            <span class="city-item-tag">${label}</span>
         `;
+        
         item.addEventListener('click', () => {
             document.querySelectorAll('.city-item').forEach(i => i.classList.remove('active'));
             item.classList.add('active');
-            inspectCity(city);
-            flyTo(city.x * renderer.cellSize, city.y * renderer.cellSize, 10.0);
+            inspectCity(settle);
+            
+            // Pan camera smoothly to coordinates
+            if (renderer) {
+                renderer.viewport.camera.x = settle.x * renderer.cellSize;
+                renderer.viewport.camera.y = settle.y * renderer.cellSize;
+                renderer.viewport.camera.zoom = 2.5; // fly in zoom
+                renderer.viewport.updateLOD();
+                renderer.draw();
+                updateStatusBar(settle.x, settle.y);
+            }
         });
         cityListContainer.appendChild(item);
     });
 }
 
-function inspectCity(city) {
-    selectedCity = city;
-    aiBridge.closeInteraction();
+function inspectCity(settle) {
+    selectedCity = settle;
     
-    const country = world.countries[city.countryId];
-    const countryName = country ? country.name : 'Neutral Wilds';
-    const countryColor = country ? country.color : '#94a3b8';
-
+    const goodsStr = settle.resources.join(', ');
+    const label = settle.type === 'town' ? 'Sovereign Town' : 'Industrial Outpost';
+    
     inspectorContent.innerHTML = `
-        <h3 class="inspector-title">${city.name}</h3>
-        <div class="inspector-subtitle" style="--glow-color: ${countryColor}">
-            ${city.isCapital ? 'Crown Capital' : 'Settlement'} of ${countryName}
+        <h3 class="inspector-title">${settle.name}</h3>
+        <div class="inspector-subtitle" style="--glow-color: var(--gold)">
+            ${label}
         </div>
         
         <div class="inspector-stats">
-            <div class="stat-box"><div class="stat-label">Population</div><div class="stat-val">${city.population.toLocaleString()}</div></div>
-            <div class="stat-box"><div class="stat-label">Trade Goods</div><div class="stat-val">${city.tradeGoods.join(', ')}</div></div>
-            <div class="stat-box"><div class="stat-label">Ruler</div><div class="stat-val">${city.ruler}</div></div>
-            <div class="stat-box"><div class="stat-label">Local Biome</div><div class="stat-val">${city.biome}</div></div>
+            <div class="stat-box"><div class="stat-label">Population</div><div class="stat-val">${settle.population.toLocaleString()}</div></div>
+            <div class="stat-box"><div class="stat-label">Ruler</div><div class="stat-val">${settle.ruler}</div></div>
+            <div class="stat-box"><div class="stat-label">Local Goods</div><div class="stat-val">${goodsStr}</div></div>
         </div>
         <div class="inspector-divider"></div>
-        <p class="inspector-description">"${city.lore}"</p>
-        <div style="margin-top: 24px;">
-            <button class="btn btn-primary" id="flyToStreetsBtn" style="width:100%;">Survey Streets</button>
-        </div>
+        <p class="inspector-description" style="font-style: italic; color: var(--gold);">
+            Origin Cause: "${settle.origin_reason}"
+        </p>
+        <p class="inspector-description">"${settle.lore}"</p>
     `;
-
-    document.getElementById('flyToStreetsBtn').addEventListener('click', () => {
-        flyTo(city.x * renderer.cellSize, city.y * renderer.cellSize, 10.0);
-    });
-
     inspectorPanel.classList.add('open');
 }
 
 function closeInspector() {
     selectedCity = null;
     inspectorPanel.classList.remove('open');
-    if (aiBridge) aiBridge.closeInteraction();
-}
-
-function flyTo(targetX, targetY, targetZoom) {
-    const cam = renderer.viewport.camera;
-    cameraTween = {
-        startX: cam.x,
-        startY: cam.y,
-        startZoom: cam.zoom,
-        targetX: targetX,
-        targetY: targetY,
-        targetZoom: targetZoom,
-        duration: 80,
-        currentFrame: 0
-    };
-}
-
-function updateCameraTween() {
-    if (!cameraTween) return;
-    const t = cameraTween.currentFrame / cameraTween.duration;
-    const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-    
-    const cam = renderer.viewport.camera;
-    cam.x = cameraTween.startX + (cameraTween.targetX - cameraTween.startX) * ease;
-    cam.y = cameraTween.startY + (cameraTween.targetY - cameraTween.startY) * ease;
-    cam.zoom = cameraTween.startZoom + (cameraTween.targetZoom - cameraTween.startZoom) * ease;
-    
-    renderer.viewport.updateLOD();
-    
-    cameraTween.currentFrame++;
-    if (cameraTween.currentFrame > cameraTween.duration) cameraTween = null;
+    inspectorContent.innerHTML = `
+        <div class="no-selection-msg">
+            <p>💡 Click on any settlement node or select it from the Registry list to inspect its logs.</p>
+        </div>
+    `;
 }
 
 function tick(now) {
-    const dt = (now - lastFrameTime) / 1000.0; // delta time in seconds
+    const dt = (now - lastFrameTime) / 1000.0;
     lastFrameTime = now;
 
-    if (simulation) simulation.update(dt);
-    if (player) player.update(dt);
-    if (renderer) renderer.update();
-    
-    updateCameraTween();
-    
-    if (renderer) renderer.draw();
+    if (renderer && world) {
+        renderer.update();
+        renderer.draw();
+        
+        // Dynamic game time ticks purely on the client side for aesthetics
+        const totalMinutes = Math.floor(now * 0.02) % (24 * 60);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        const displayHours = hours % 12 === 0 ? 12 : hours % 12;
+        const padMins = minutes.toString().padStart(2, '0');
+        clockDisplay.textContent = `${displayHours}:${padMins} ${ampm}`;
+        
+        let phase = "Morning";
+        if (hours >= 18) phase = "Night";
+        else if (hours >= 12) phase = "Afternoon";
+        else if (hours >= 6) phase = "Morning";
+        else phase = "Midnight";
+        dayPhaseDisplay.textContent = phase;
+    }
     
     requestAnimationFrame(tick);
 }

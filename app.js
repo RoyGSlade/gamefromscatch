@@ -66,7 +66,7 @@ function handleResize() {
 async function generateNewWorld(seed) {
     try {
         console.log(`Requesting world slice for seed: "${seed}"...`);
-        const response = await fetch(`http://127.0.0.1:8000/api/world/generate?seed=${encodeURIComponent(seed)}`);
+        const response = await fetch(`/api/world/generate?seed=${encodeURIComponent(seed)}`);
         
         if (!response.ok) {
             throw new Error(`Server returned status: ${response.status}`);

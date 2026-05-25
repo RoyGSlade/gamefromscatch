@@ -1,8 +1,9 @@
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict
 from .cell import CellSchema
 from .settlement import SettlementSchema
 from .infrastructure import RoadSchema, BridgeSchema, POISchema, MobileTokenSchema
+from .resource import ResourceSchema
 
 class WorldResponse(BaseModel):
     seed: str
@@ -13,6 +14,7 @@ class WorldResponse(BaseModel):
     settlements: List[SettlementSchema]
     roads: List[RoadSchema]
     bridges: List[BridgeSchema]
-    resources: List[Dict[str, Any]]
+    resources: List[ResourceSchema]
     pois: List[POISchema]
     mobile_tokens: List[MobileTokenSchema]
+

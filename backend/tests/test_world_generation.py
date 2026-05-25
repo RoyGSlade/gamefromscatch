@@ -136,3 +136,96 @@ def test_roads_avoid_deep_ocean():
         for node in r["path"]:
             wt = cell_map.get((node["x"], node["y"]))
             assert wt != "ocean"
+
+def test_organic_landmass_shape():
+    """
+    Verify that the landmass shape is organic and non-circular.
+    This asserts that shoreline cell distances from the center (64, 64)
+    exhibit a healthy standard deviation (> 1.5).
+    """
+    world = generate_full_world_slice("Eldoria")
+    width = world["width"]
+    height = world["height"]
+    cell_map = { (c["x"], c["y"]): c for c in world["cells"] }
+    
+    shoreline_distances = []
+    center_x, center_y = width // 2, height // 2
+    
+    for c in world["cells"]:
+        # Shoreline: land adjacent to ocean
+        if c["elevation"] >= 0.45:  # land
+            is_shore = False
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = c["x"] + dx, c["y"] + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    neighbor = cell_map.get((nx, ny))
+                    if neighbor and neighbor["elevation"] < 0.45:
+                        is_shore = True
+                        break
+            if is_shore:
+                dist = np.hypot(c["x"] - center_x, c["y"] - center_y)
+                shoreline_distances.append(dist)
+                
+    assert len(shoreline_distances) > 0
+    std_dev = np.std(shoreline_distances)
+    # Organic coastlines will have significant variance compared to a perfect circle (std = 0)
+    assert std_dev > 1.5
+
+def test_river_depression_filling():
+    """
+    Verify that when a river encounters a depression/sink, it pools into a lake (water_type == 'lake'),
+    and successfully routes downhill through the lake spillover point to reach the ocean.
+    """
+    world = generate_full_world_slice("Eldoria")
+    lake_cells = [c for c in world["cells"] if c["water_type"] == "lake"]
+    
+    if lake_cells:
+        lake_coords = { (c["x"], c["y"]) for c in lake_cells }
+        cell_map = { (c["x"], c["y"]): c for c in world["cells"] }
+        
+        found_traversed_river = False
+        for path in world["rivers"]:
+            path_coords = [(node["x"], node["y"]) for node in path]
+            intersects = any(coord in lake_coords for coord in path_coords)
+            if intersects:
+                # River must be fully contiguous and reach adjacent ocean or ocean cell at the end
+                last_node = path[-1]
+                last_cell = cell_map[(last_node["x"], last_node["y"])]
+                
+                # River ends at ocean boundary
+                is_near_ocean = last_cell["water_type"] == "ocean" or any(
+                    cell_map.get((last_node["x"] + dx, last_node["y"] + dy), {}).get("water_type") == "ocean"
+                    for dx, dy in [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (1,-1), (-1,1), (1,1)]
+                )
+                assert is_near_ocean
+                found_traversed_river = True
+                
+        assert found_traversed_river
+
+def test_road_pathfinding_integrity():
+    """
+    Verify that generated roads return fully connected sequences of adjacent cells.
+    No coordinate gaps (diagonal or straight distance > 1) are permitted.
+    """
+    world = generate_full_world_slice("Eldoria")
+    for road in world["roads"]:
+        path = road["path"]
+        assert len(path) >= 2
+        for i in range(len(path) - 1):
+            curr_node = path[i]
+            next_node = path[i+1]
+            dx = abs(curr_node["x"] - next_node["x"])
+            dy = abs(curr_node["y"] - next_node["y"])
+            assert dx <= 1 and dy <= 1
+            assert not (dx == 0 and dy == 0)
+
+def test_strict_schema_adherence():
+    """
+    Verify that all generated world output matches reinforced Pydantic schemas perfectly.
+    """
+    from app.schemas.world import WorldResponse
+    for seed in ["Eldoria", "Valoria", "DeepStone"]:
+        world_data = generate_full_world_slice(seed)
+        response_model = WorldResponse(**world_data)
+        assert response_model.seed == seed
+

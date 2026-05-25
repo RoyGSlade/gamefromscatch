@@ -1,23 +1,24 @@
-from pydantic import BaseModel
-from typing import List, Dict, Optional, Any
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
+from .cell import CoordinateSchema
 
 class RoadSchema(BaseModel):
     id: str
-    path: List[Dict[str, int]]  # List of {"x": int, "y": int}
+    path: List[CoordinateSchema]
     origin_reason: str
 
 class BridgeSchema(BaseModel):
     id: str
-    x: int
-    y: int
+    x: int = Field(..., ge=0, le=127)
+    y: int = Field(..., ge=0, le=127)
     river_flow: float
     origin_reason: str
 
 class POISchema(BaseModel):
     id: str
     name: str
-    x: int
-    y: int
+    x: int = Field(..., ge=0, le=127)
+    y: int = Field(..., ge=0, le=127)
     type: str  # e.g., "dungeon", "ruin", "cave"
     description: str
     origin_reason: str
@@ -25,7 +26,8 @@ class POISchema(BaseModel):
 class MobileTokenSchema(BaseModel):
     id: str
     name: str
-    type: str  # "caravan" or "patrol"
-    route: List[Dict[str, int]]  # Coordinates along path
+    type: Literal["caravan", "patrol"]
+    route: List[CoordinateSchema]
     cargo: Optional[str] = None
     origin: str  # origin settlement ID or name
+

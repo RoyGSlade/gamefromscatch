@@ -43,6 +43,15 @@ let inspectedType = null; // 'settlement', 'district', 'building'
 let inspectedData = null;
 let inspectedLayout = null;
 
+function safeList(value) {
+    return Array.isArray(value) ? value : [];
+}
+
+function formatList(value, fallback = 'None') {
+    const list = safeList(value);
+    return list.length > 0 ? list.join(', ') : fallback;
+}
+
 function init() {
     setupCanvas();
     
@@ -440,7 +449,7 @@ function inspectCity(settle) {
         renderer.draw();
     }
     
-    const goodsStr = settle.resources.join(', ');
+    const goodsStr = formatList(settle.resources);
     const label = settle.type === 'town' ? 'Sovereign Town' : 'Industrial Outpost';
     
     let html = `
@@ -450,15 +459,15 @@ function inspectCity(settle) {
         </div>
         
         <div class="inspector-stats">
-            <div class="stat-box"><div class="stat-label">Population</div><div class="stat-val">${settle.population.toLocaleString()}</div></div>
-            <div class="stat-box"><div class="stat-label">Ruler</div><div class="stat-val">${settle.ruler}</div></div>
+            <div class="stat-box"><div class="stat-label">Population</div><div class="stat-val">${(settle.population ?? 0).toLocaleString()}</div></div>
+            <div class="stat-box"><div class="stat-label">Ruler</div><div class="stat-val">${settle.ruler ?? 'Unknown'}</div></div>
             <div class="stat-box"><div class="stat-label">Local Goods</div><div class="stat-val">${goodsStr}</div></div>
         </div>
         <div class="inspector-divider"></div>
         <p class="inspector-description" style="font-style: italic; color: var(--gold);">
-            Origin Cause: "${settle.origin_reason}"
+            Origin Cause: "${settle.origin_reason ?? 'Unknown'}"
         </p>
-        <p class="inspector-description">"${settle.lore}"</p>
+        <p class="inspector-description">"${settle.lore ?? ''}"</p>
     `;
     
     // If districtsToggle is checked (Show Districts) and we have a layout, let's list the districts in the settlement!
@@ -491,7 +500,7 @@ function inspectBuilding(bld, layout) {
     inspectedType = 'building';
     inspectedData = bld;
     inspectedLayout = layout;
-    selectedCity = world.settlements.find(s => s.id === layout.settlement_id);
+    selectedCity = world.settlements.find(s => s.id === layout.settlement_id) || { id: layout.settlement_id, name: 'Unknown Settlement' };
     
     if (renderer) {
         renderer.selectedBuilding = bld;
@@ -506,17 +515,17 @@ function inspectBuilding(bld, layout) {
         
         <div class="inspector-stats" style="grid-template-columns: repeat(2, 1fr);">
             <div class="stat-box"><div class="stat-label">Settlement</div><div class="stat-val">${selectedCity.name}</div></div>
-            <div class="stat-box"><div class="stat-label">Condition</div><div class="stat-val">${Math.round(bld.condition * 100)}%</div></div>
-            <div class="stat-box"><div class="stat-label">Obscurity</div><div class="stat-val">${bld.obscurity_rating}</div></div>
-            <div class="stat-box"><div class="stat-label">Price Mod</div><div class="stat-val">${bld.price_modifier.toFixed(2)}x</div></div>
+            <div class="stat-box"><div class="stat-label">Condition</div><div class="stat-val">${Math.round((bld.condition ?? 0) * 100)}%</div></div>
+            <div class="stat-box"><div class="stat-label">Obscurity</div><div class="stat-val">${bld.obscurity_rating ?? 0}</div></div>
+            <div class="stat-box"><div class="stat-label">Price Mod</div><div class="stat-val">${(bld.price_modifier ?? 1).toFixed(2)}x</div></div>
         </div>
         
         <div class="inspector-divider"></div>
         <p class="inspector-description" style="font-weight: 500;">
-            Purpose: <span style="color: #94a3b8; font-weight: normal;">${bld.purpose}</span>
+            Purpose: <span style="color: #94a3b8; font-weight: normal;">${bld.purpose ?? 'Unknown'}</span>
         </p>
         <p class="inspector-description" style="font-style: italic; color: var(--gold);">
-            Origin Cause: "${bld.origin_reasons.join(', ')}"
+            Origin Cause: "${formatList(bld.origin_reasons, 'Unknown')}"
         </p>
     `;
     
@@ -525,26 +534,26 @@ function inspectBuilding(bld, layout) {
             <div class="inspector-divider"></div>
             <h4 style="color: var(--gold); font-family: var(--font-serif); margin-top: 12px; margin-bottom: 8px;">Production & Logistics</h4>
             <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem;">
-                <div style="margin-bottom: 6px;"><strong style="color: #f59e0b;">Consumes:</strong> ${bld.consumes.length > 0 ? bld.consumes.join(', ') : 'None'}</div>
-                <div style="margin-bottom: 6px;"><strong style="color: #60a5fa;">Requires:</strong> ${bld.requires.length > 0 ? bld.requires.join(', ') : 'None'}</div>
-                <div style="margin-bottom: 6px;"><strong style="color: #34d399;">Produces:</strong> ${bld.produces.length > 0 ? bld.produces.join(', ') : 'None'}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #f59e0b;">Consumes:</strong> ${formatList(bld.consumes)}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #60a5fa;">Requires:</strong> ${formatList(bld.requires)}</div>
+                <div style="margin-bottom: 6px;"><strong style="color: #34d399;">Produces:</strong> ${formatList(bld.produces)}</div>
         `;
         
-        const chains = layout.production_chains.filter(c => c.buildings_involved.includes(bld.id));
+        const chains = safeList(layout.production_chains).filter(c => safeList(c.buildings_involved).includes(bld.id));
         if (chains.length > 0) {
             html += `
                 <div style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
                     <div style="font-weight: bold; color: var(--gold); font-size: 0.85rem; margin-bottom: 4px;">Supply Chain Map:</div>
             `;
             chains.forEach(chain => {
-                const inputsStr = chain.inputs.join(', ') || 'Raw Nature';
-                const outputsStr = chain.outputs.join(', ');
+                const inputsStr = formatList(chain.inputs, 'Raw Nature');
+                const outputsStr = formatList(chain.outputs);
                 html += `
                     <div style="font-size: 0.8rem; background: rgba(0,0,0,0.2); padding: 6px; border-radius: 4px; margin-bottom: 6px;">
                         <div><span style="color: #94a3b8;">Inputs:</span> ${inputsStr}</div>
-                        <div style="margin: 2px 0; color: #a78bfa; font-weight: bold;">➔ [${chain.processors.join(' ➔ ')}] ➔</div>
+                        <div style="margin: 2px 0; color: #a78bfa; font-weight: bold;">➔ [${formatList(chain.processors)}] ➔</div>
                         <div><span style="color: #34d399; font-weight: bold;">Outputs:</span> ${outputsStr}</div>
-                        ${chain.bottlenecks.length > 0 ? `<div style="color: #f87171; font-size: 0.75rem; margin-top: 4px;">⚠️ Bottleneck: ${chain.bottlenecks.join(', ')}</div>` : ''}
+                        ${safeList(chain.bottlenecks).length > 0 ? `<div style="color: #f87171; font-size: 0.75rem; margin-top: 4px;">⚠️ Bottleneck: ${formatList(chain.bottlenecks)}</div>` : ''}
                     </div>
                 `;
             });
@@ -554,7 +563,7 @@ function inspectBuilding(bld, layout) {
     }
     
     if (jobsToggle && jobsToggle.checked) {
-        const jobs = layout.job_slots.filter(j => bld.job_slots.includes(j.id));
+        const jobs = safeList(layout.job_slots).filter(j => safeList(bld.job_slots).includes(j.id));
         html += `
             <div class="inspector-divider"></div>
             <h4 style="color: var(--gold); font-family: var(--font-serif); margin-top: 12px; margin-bottom: 8px;">Labor & Job Slots</h4>
@@ -566,12 +575,12 @@ function inspectBuilding(bld, layout) {
                     <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); font-size: 0.85rem;">
                         <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 2px;">
                             <span style="color: #60a5fa;">${job.role} (x${job.count})</span>
-                            <span style="color: #f59e0b;">${'★'.repeat(job.social_importance)}${'☆'.repeat(5-job.social_importance)}</span>
+                            <span style="color: #f59e0b;">${'★'.repeat(job.social_importance ?? 0)}${'☆'.repeat(Math.max(0, 5-(job.social_importance ?? 0)))}</span>
                         </div>
-                        <div style="color: #94a3b8; font-size: 0.8rem;">Skills: ${job.required_skills.join(', ')}</div>
+                        <div style="color: #94a3b8; font-size: 0.8rem;">Skills: ${formatList(job.required_skills)}</div>
                         <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #94a3b8; margin-top: 4px;">
-                            <span>Danger: ${(job.danger_level * 100).toFixed(0)}%</span>
-                            <span>Shift: ${job.schedule_template}</span>
+                            <span>Danger: ${((job.danger_level ?? 0) * 100).toFixed(0)}%</span>
+                            <span>Shift: ${job.schedule_template ?? 'Unscheduled'}</span>
                         </div>
                     </div>
                 `;
@@ -595,7 +604,7 @@ function inspectDistrict(dist, layout) {
     inspectedType = 'district';
     inspectedData = dist;
     inspectedLayout = layout;
-    selectedCity = world.settlements.find(s => s.id === layout.settlement_id);
+    selectedCity = world.settlements.find(s => s.id === layout.settlement_id) || { id: layout.settlement_id, name: 'Unknown Settlement' };
     
     if (renderer) {
         renderer.selectedBuilding = null;
@@ -620,10 +629,10 @@ function inspectDistrict(dist, layout) {
         
         <div class="inspector-divider"></div>
         <p class="inspector-description" style="font-weight: 500;">
-            Required Services: <span style="color: #94a3b8; font-weight: normal;">${dist.required_services.join(', ')}</span>
+            Required Services: <span style="color: #94a3b8; font-weight: normal;">${formatList(dist.required_services)}</span>
         </p>
         <p class="inspector-description" style="font-style: italic; color: var(--gold);">
-            Origin Cause: "${dist.origin_reasons.join(', ')}"
+            Origin Cause: "${formatList(dist.origin_reasons, 'Unknown')}"
         </p>
         
         <div class="inspector-divider"></div>

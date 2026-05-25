@@ -73,6 +73,70 @@ def generate_local_road_path(
         
     return []
 
+def find_nearest_open_cell(
+    target: Tuple[int, int],
+    occupied_mask: np.ndarray,
+    local_bounds: Tuple[int, int, int, int]
+) -> Tuple[int, int]:
+    """
+    Finds the nearest unoccupied coordinate inside local bounds.
+    Used to route streets to access points beside occupied districts/buildings.
+    """
+    tx, ty = target
+    min_x, max_x, min_y, max_y = local_bounds
+
+    if min_x <= tx <= max_x and min_y <= ty <= max_y and not occupied_mask[ty, tx]:
+        return tx, ty
+
+    max_radius = max(max_x - min_x, max_y - min_y)
+    candidates = []
+    for radius in range(1, max_radius + 1):
+        for y in range(max(min_y, ty - radius), min(max_y, ty + radius) + 1):
+            for x in range(max(min_x, tx - radius), min(max_x, tx + radius) + 1):
+                if occupied_mask[y, x]:
+                    continue
+                distance = abs(x - tx) + abs(y - ty)
+                if distance == radius:
+                    candidates.append((distance, x, y))
+        if candidates:
+            candidates.sort()
+            return candidates[0][1], candidates[0][2]
+
+    return max(min_x, min(max_x, tx)), max(min_y, min(max_y, ty))
+
+def find_building_access_cell(
+    building: Dict[str, Any],
+    occupied_mask: np.ndarray,
+    local_bounds: Tuple[int, int, int, int],
+    road_origin: Tuple[int, int]
+) -> Tuple[int, int]:
+    """
+    Finds an unoccupied perimeter cell adjacent to a building footprint.
+    """
+    min_x, max_x, min_y, max_y = local_bounds
+    bx, by = building["x"], building["y"]
+    bw, bh = building["width"], building["height"]
+    ox, oy = road_origin
+
+    candidates = []
+    for x in range(bx, bx + bw):
+        candidates.append((x, by - 1))
+        candidates.append((x, by + bh))
+    for y in range(by, by + bh):
+        candidates.append((bx - 1, y))
+        candidates.append((bx + bw, y))
+
+    valid = []
+    for x, y in candidates:
+        if min_x <= x <= max_x and min_y <= y <= max_y and not occupied_mask[y, x]:
+            valid.append((abs(x - ox) + abs(y - oy), x, y))
+
+    if valid:
+        valid.sort()
+        return valid[0][1], valid[0][2]
+
+    return find_nearest_open_cell((bx, by), occupied_mask, local_bounds)
+
 def generate_settlement_layout(
     settlement: Dict[str, Any],
     elevation: np.ndarray,
@@ -328,9 +392,12 @@ def generate_settlement_layout(
                     found_entrance = True
                     break
                     
-    # Generate Main Road connecting Entrance to Town Center
+    entrance_x, entrance_y = find_nearest_open_cell((entrance_x, entrance_y), occupied_mask, local_bounds)
+    center_access = find_nearest_open_cell((tx, ty), occupied_mask, local_bounds)
+
+    # Generate Main Road connecting Entrance to a walkable Town Center access cell
     center_road_path = generate_local_road_path(
-        global_width, global_height, (entrance_x, entrance_y), (tx, ty), occupied_mask, road_mask, local_bounds
+        global_width, global_height, (entrance_x, entrance_y), center_access, occupied_mask, road_mask, local_bounds
     )
     if center_road_path:
         for node in center_road_path:
@@ -347,7 +414,7 @@ def generate_settlement_layout(
         if dist["type"] == "town_center" or dist["type"] == "extraction_site":
             continue
             
-        dist_x, dist_y = dist["x"], dist["y"]
+        dist_x, dist_y = find_nearest_open_cell((dist["x"], dist["y"]), occupied_mask, local_bounds)
         # Find closest point already on the road
         road_coords = np.argwhere(road_mask)
         if len(road_coords) > 0:
@@ -378,16 +445,16 @@ def generate_settlement_layout(
     # Connect any public buildings not adjacent to roads
     for bld in buildings:
         if bld["public_access"]:
-            bx, by = bld["x"], bld["y"]
             road_coords = np.argwhere(road_mask)
             if len(road_coords) > 0:
                 road_coords_list = [(int(c[1]), int(c[0])) for c in road_coords]
-                road_coords_list.sort(key=lambda coord: abs(coord[0] - bx) + abs(coord[1] - by))
+                road_coords_list.sort(key=lambda coord: abs(coord[0] - bld["x"]) + abs(coord[1] - bld["y"]))
                 closest_road = road_coords_list[0]
+                access_cell = find_building_access_cell(bld, occupied_mask, local_bounds, closest_road)
                 
                 # Draw small connector footpath path
                 footpath = generate_local_road_path(
-                    global_width, global_height, closest_road, (bx, by), occupied_mask, road_mask, local_bounds
+                    global_width, global_height, closest_road, access_cell, occupied_mask, road_mask, local_bounds
                 )
                 if footpath:
                     for node in footpath:

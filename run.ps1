@@ -7,6 +7,41 @@ Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host "   Starting Chronicles of Eldoria Launcher   " -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 
+# 0. Clean up previous processes and locks
+Write-Host "[0/4] Checking for and closing previous backend/frontend processes..." -ForegroundColor Yellow
+
+# Kill processes running on ports 8000 (FastAPI) and 3000 (Vite)
+$ports = @(8000, 3000)
+foreach ($port in $ports) {
+    try {
+        $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        foreach ($conn in $connections) {
+            if ($conn.OwningProcess) {
+                $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+                if ($proc) {
+                    Write-Host "Stopping process $($proc.Name) (ID: $($proc.Id)) listening on port $port..." -ForegroundColor Cyan
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    } catch {}
+}
+
+# Kill any processes running from the backend virtual environment (locks on pip/python)
+$venvPath = Join-Path $PSScriptRoot "backend\venv"
+if (Test-Path $venvPath) {
+    Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($_.Path -and $_.Path.StartsWith($venvPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Write-Host "Stopping lingering virtual environment process: $($_.Name) (ID: $($_.Id))..." -ForegroundColor Cyan
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+}
+
+Write-Host "Cleanup complete! All previous engine processes and file locks released." -ForegroundColor Green
+
 # 1. Ensure Python is installed
 Write-Host "[1/4] Checking Python installation..." -ForegroundColor Yellow
 if (Get-Command "python" -ErrorAction SilentlyContinue) {
@@ -35,8 +70,25 @@ $pythonExec = Join-Path $venvPath "Scripts\python.exe"
 
 # Install requirements
 Write-Host "Installing/Verifying Python dependencies..." -ForegroundColor Cyan
-& $pipPath install -r (Join-Path $PSScriptRoot "backend\requirements.txt")
-Write-Host "Python dependencies verified successfully!" -ForegroundColor Green
+
+# High-speed pre-check: if all required packages are already importable, bypass network-checking pip install
+$allInstalled = $true
+try {
+    & $pythonExec -c "import fastapi, uvicorn, numpy, scipy, pydantic, requests" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        $allInstalled = $false
+    }
+} catch {
+    $allInstalled = $false
+}
+
+if ($allInstalled) {
+    Write-Host "Python dependencies verified successfully (cached)!" -ForegroundColor Green
+} else {
+    Write-Host "Dependencies missing or incomplete. Running pip install (this may take a moment)..." -ForegroundColor Cyan
+    & $pipPath install -r (Join-Path $PSScriptRoot "backend\requirements.txt")
+    Write-Host "Python dependencies verified successfully!" -ForegroundColor Green
+}
 
 # 3. Verify Node.js/NPM dependencies
 Write-Host "[3/4] Verifying Frontend (Node.js) dependencies..." -ForegroundColor Yellow

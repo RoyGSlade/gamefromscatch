@@ -1,15 +1,7 @@
 /**
- * viewport.js - Multi-Tier Zoom & Level of Detail Engine
- * Manages explicit LOD states (Continent, Country, Province, City)
- * and camera transition math.
+ * viewport.js - Continuous camera scaling manager.
+ * Maintains pan/zoom transforms while render layers derive opacity from zoom.
  */
-
-export const LOD_TIERS = {
-    CONTINENT: 0, // Zoom < 1.0 (Macro level: landmasses, borders)
-    COUNTRY: 1,   // Zoom 1.0 - 3.5 (Mountain ranges, major roads)
-    PROVINCE: 2,  // Zoom 3.5 - 7.5 (Topography, rivers, minor towns)
-    CITY: 3       // Zoom >= 7.5 (Full transition to organic city-grid)
-};
 
 export class ViewportManager {
     constructor(canvasWidth, canvasHeight) {
@@ -20,7 +12,6 @@ export class ViewportManager {
         };
         this.width = canvasWidth;
         this.height = canvasHeight;
-        this.currentLOD = LOD_TIERS.CONTINENT;
     }
 
     resize(w, h) {
@@ -59,24 +50,6 @@ export class ViewportManager {
         // Re-center camera such that the world point stays under the cursor
         this.camera.x = wx - (targetX - this.width / 2) / newZoom;
         this.camera.y = wy - (targetY - this.height / 2) / newZoom;
-
-        this.updateLOD();
-    }
-
-    /**
-     * Determines the explicit LOD tier based on zoom.
-     */
-    updateLOD() {
-        const z = this.camera.zoom;
-        if (z >= 7.5) {
-            this.currentLOD = LOD_TIERS.CITY;
-        } else if (z >= 3.5) {
-            this.currentLOD = LOD_TIERS.PROVINCE;
-        } else if (z >= 1.0) {
-            this.currentLOD = LOD_TIERS.COUNTRY;
-        } else {
-            this.currentLOD = LOD_TIERS.CONTINENT;
-        }
     }
 
     /**
@@ -90,6 +63,14 @@ export class ViewportManager {
         const cellY = Math.floor(wy / cellSize);
         
         return { cellX, cellY, wx, wy };
+    }
+
+    getVisibleCellBounds(worldWidth, worldHeight, cellSize) {
+        const minX = Math.max(0, Math.floor(((0 - this.width / 2) / this.camera.zoom + this.camera.x) / cellSize) - 1);
+        const minY = Math.max(0, Math.floor(((0 - this.height / 2) / this.camera.zoom + this.camera.y) / cellSize) - 1);
+        const maxX = Math.min(worldWidth - 1, Math.ceil(((this.width - this.width / 2) / this.camera.zoom + this.camera.x) / cellSize) + 1);
+        const maxY = Math.min(worldHeight - 1, Math.ceil(((this.height - this.height / 2) / this.camera.zoom + this.camera.y) / cellSize) + 1);
+        return { minX, maxX, minY, maxY };
     }
 
     /**

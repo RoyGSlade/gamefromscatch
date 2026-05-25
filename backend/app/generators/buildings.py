@@ -21,8 +21,8 @@ def create_building_template(
     """
     # Deterministic attributes based on coordinates/type
     condition = round(0.75 + ((x * y) % 25) / 100.0, 2)
-    locked_at_night = bld_type not in ["tavern", "inn", "watch_post", "shrine"]
-    public_access = bld_type in ["tavern", "inn", "shrine", "temple", "general_store", "shop"]
+    locked_at_night = bld_type not in ["tavern", "inn", "tavern/inn", "watch_post", "shrine"]
+    public_access = bld_type in ["tavern", "inn", "tavern/inn", "shrine", "temple", "general_store", "shop"]
     obscurity_rating = 10 + (x + y) % 8
     price_mod = round(1.0 + ((x - y) % 30) / 100.0, 2)
     if bld_type == "tavern":

@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Literal
+from .resource import RESOURCE_TYPES
 
 class CoordinateSchema(BaseModel):
     x: int = Field(..., ge=0, le=127, description="X coordinate (0-127)")
@@ -16,4 +17,4 @@ class CellSchema(BaseModel):
     water_type: Literal["none", "ocean", "river", "lake"] = Field(..., description="Type of water present in this cell")
     river_flow: float = Field(..., ge=0.0)
     travel_cost: float = Field(..., ge=0.0)
-    resources: List[Literal["Iron Ore", "Gold", "Timber", "Fish"]] = Field(..., description="List of resource types overlaying this cell")
+    resources: List[RESOURCE_TYPES] = Field(..., description="List of resource types overlaying this cell")

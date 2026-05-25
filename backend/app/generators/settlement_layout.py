@@ -73,6 +73,70 @@ def generate_local_road_path(
         
     return []
 
+def find_nearest_open_cell(
+    target: Tuple[int, int],
+    occupied_mask: np.ndarray,
+    local_bounds: Tuple[int, int, int, int]
+) -> Tuple[int, int]:
+    """
+    Finds the nearest unoccupied coordinate inside local bounds.
+    Used to route streets to access points beside occupied districts/buildings.
+    """
+    tx, ty = target
+    min_x, max_x, min_y, max_y = local_bounds
+
+    if min_x <= tx <= max_x and min_y <= ty <= max_y and not occupied_mask[ty, tx]:
+        return tx, ty
+
+    max_radius = max(max_x - min_x, max_y - min_y)
+    candidates = []
+    for radius in range(1, max_radius + 1):
+        for y in range(max(min_y, ty - radius), min(max_y, ty + radius) + 1):
+            for x in range(max(min_x, tx - radius), min(max_x, tx + radius) + 1):
+                if occupied_mask[y, x]:
+                    continue
+                distance = abs(x - tx) + abs(y - ty)
+                if distance == radius:
+                    candidates.append((distance, x, y))
+        if candidates:
+            candidates.sort()
+            return candidates[0][1], candidates[0][2]
+
+    return max(min_x, min(max_x, tx)), max(min_y, min(max_y, ty))
+
+def find_building_access_cell(
+    building: Dict[str, Any],
+    occupied_mask: np.ndarray,
+    local_bounds: Tuple[int, int, int, int],
+    road_origin: Tuple[int, int]
+) -> Tuple[int, int]:
+    """
+    Finds an unoccupied perimeter cell adjacent to a building footprint.
+    """
+    min_x, max_x, min_y, max_y = local_bounds
+    bx, by = building["x"], building["y"]
+    bw, bh = building["width"], building["height"]
+    ox, oy = road_origin
+
+    candidates = []
+    for x in range(bx, bx + bw):
+        candidates.append((x, by - 1))
+        candidates.append((x, by + bh))
+    for y in range(by, by + bh):
+        candidates.append((bx - 1, y))
+        candidates.append((bx + bw, y))
+
+    valid = []
+    for x, y in candidates:
+        if min_x <= x <= max_x and min_y <= y <= max_y and not occupied_mask[y, x]:
+            valid.append((abs(x - ox) + abs(y - oy), x, y))
+
+    if valid:
+        valid.sort()
+        return valid[0][1], valid[0][2]
+
+    return find_nearest_open_cell((bx, by), occupied_mask, local_bounds)
+
 def generate_settlement_layout(
     settlement: Dict[str, Any],
     elevation: np.ndarray,
@@ -113,7 +177,7 @@ def generate_settlement_layout(
     is_coastal = any(water_type[y, x] in ["ocean", "lake"] for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1))
     has_river = any(water_type[y, x] == "river" for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1))
     
-    if settlement_type == "town":
+    if settlement_type in ("town", "capital"):
         # Town districts
         districts.append({
             "id": f"dist_{settlement_id}_center", "settlement_id": settlement_id, "type": "town_center",
@@ -196,42 +260,57 @@ def generate_settlement_layout(
     # Establish building proposals list based on settlement type
     proposals = []
     
-    if settlement_type == "town":
-        proposals.append(("dist_town_01_center", "town_hall", "Town Hall", "Administrative keep and court.", ["Sovereign presence."], [], ["lumber_planks"], ["tax_revenue"], 2, 2, 3))
-        proposals.append(("dist_town_01_center", "tavern/inn", "The Prancing Griffin", "Local tavern providing rest and drinks.", ["Social hub."], ["ale", "bread"], ["gold"], ["waste"], 1, 2, 2))
-        proposals.append(("dist_town_01_market", "general_store", "Realm Imports", "Merchant depot trading supplies.", ["Trade routing."], ["wool", "grain"], ["goods"], ["gold"], 1, 1, 2))
-        proposals.append(("dist_town_01_craft", "blacksmith", "Iron Hearth Forge", "Smithy producing heavy tools.", ["Sub-surface ores nearby."], ["iron_ingots", "coal"], ["iron_tools"], ["ash"], 2, 1, 3))
-        proposals.append(("dist_town_01_religious", "shrine", "Shrine of Eld", "Sacred clearing for meditation.", ["Ancient sacred clearing."], [], ["devotion"], ["incense"], 1, 1, 1))
-        proposals.append(("dist_town_01_storage", "granary", "Royal Granary", "Food stockpiling storehouse.", ["Farmlands irrigation."], ["wheat_flour"], ["stockpile"], ["waste"], 1, 2, 2))
+    if settlement_type in ("town", "capital"):
+        proposals.append((f"dist_{settlement_id}_center", "town_hall", "Town Hall", "Administrative keep and court.", ["Sovereign presence."], [], ["lumber_planks"], ["tax_revenue"], 2, 2, 3))
+        proposals.append((f"dist_{settlement_id}_center", "tavern/inn", "The Prancing Griffin", "Local tavern providing rest and drinks.", ["Social hub."], ["ale", "bread"], ["gold"], ["waste"], 1, 2, 2))
+        proposals.append((f"dist_{settlement_id}_market", "general_store", "Realm Imports", "Merchant depot trading supplies.", ["Trade routing."], ["wool", "grain"], ["goods"], ["gold"], 1, 1, 2))
+        proposals.append((f"dist_{settlement_id}_craft", "blacksmith", "Iron Hearth Forge", "Smithy producing heavy tools.", ["Sub-surface ores nearby."], ["iron_ingots", "coal"], ["iron_tools"], ["ash"], 2, 1, 3))
+        proposals.append((f"dist_{settlement_id}_religious", "shrine", "Shrine of Eld", "Sacred clearing for meditation.", ["Ancient sacred clearing."], [], ["devotion"], ["incense"], 1, 1, 1))
+        proposals.append((f"dist_{settlement_id}_storage", "granary", "Royal Granary", "Food stockpiling storehouse.", ["Farmlands irrigation."], ["wheat_flour"], ["stockpile"], ["waste"], 1, 2, 2))
         
         # Contextual buildings
         if has_river and "Timber" in settlement["resources"]:
-            proposals.append(("dist_town_01_river_industry", "sawmill", "Riverfront Sawmill", "Water-powered sawing engine.", ["Rushing river currents.", "Dense timber forests."], ["prime_timber"], ["lumber_planks"], ["sawdust"], 2, 2, 2))
+            proposals.append((f"dist_{settlement_id}_river_industry", "sawmill", "Riverfront Sawmill", "Water-powered sawing engine.", ["Rushing river currents.", "Dense timber forests."], ["prime_timber"], ["lumber_planks"], ["sawdust"], 2, 2, 2))
         if "Grain" in settlement["resources"]:
-            proposals.append(("dist_town_01_river_industry" if has_river else "dist_town_01_center", "mill", "Tethered Gristmill", "Grain milling facility.", ["Farmland crops."], ["grain_harvest"], ["wheat_flour"], ["chaff"], 1, 1, 2))
+            proposals.append((f"dist_{settlement_id}_river_industry" if has_river else f"dist_{settlement_id}_center", "mill", "Tethered Gristmill", "Grain milling facility.", ["Farmland crops."], ["grain_harvest"], ["wheat_flour"], ["chaff"], 1, 1, 2))
         if is_coastal:
-            proposals.append(("dist_town_01_docks", "docks", "Sovereign Wharf", "Harbor docks and slips.", ["Navigable water."], [], ["mooring_slips"], ["shipments"], 2, 3, 2))
-            proposals.append(("dist_town_01_docks", "fishmonger", "The Salty Net", "Curing and trade store.", ["Fish nodes nearby."], ["fresh_catch"], ["salted_fish"], ["offal"], 1, 1, 2))
+            proposals.append((f"dist_{settlement_id}_docks", "docks", "Sovereign Wharf", "Harbor docks and slips.", ["Navigable water."], [], ["mooring_slips"], ["shipments"], 2, 3, 2))
+            proposals.append((f"dist_{settlement_id}_docks", "fishmonger", "The Salty Net", "Curing and trade store.", ["Fish nodes nearby."], ["fresh_catch"], ["salted_fish"], ["offal"], 1, 1, 2))
             
         # Houses abstractly scaled by population: e.g. population / 250 (range 8 to 20)
         num_houses = max(8, min(20, settlement["population"] // 250))
         for h_idx in range(num_houses):
-            proposals.append(("dist_town_01_residential", f"house", f"Cottage {h_idx+1}", "Commoner residential housing.", ["Settlement growth."], ["bread"], [], ["waste"], 1, 1, 1))
+            proposals.append((f"dist_{settlement_id}_residential", f"house", f"Cottage {h_idx+1}", "Commoner residential housing.", ["Settlement growth."], ["bread"], [], ["waste"], 1, 1, 1))
     else:
         # Outpost proposals
         is_logging = "logging" in settlement_type or "lumber" in settlement_type or "Timber" in settlement["resources"]
-        main_type = "logging_yard" if is_logging else "mine_entrance"
-        main_name = "Whispering Logger Yard" if is_logging else "Deep Stone Shaft"
-        main_purpose = "Felling prime timber logs." if is_logging else "Extracting high-yield iron/gold veins."
-        main_reasons = ["Ancient groves."] if is_logging else ["Craggy subterranean veins."]
-        main_out = "prime_timber" if is_logging else "raw_ore"
+        is_fishing = "fishing" in settlement_type or "Fish" in settlement["resources"]
         
-        proposals.append(("dist_outpost_01_extraction", main_type, main_name, main_purpose, main_reasons, [], [main_out], [], 2, 2, 2))
-        proposals.append(("dist_outpost_01_worker_camp", "worker_bunkhouse", "Laborer Bunkhouse", "Bunks for extraction crew.", ["Worker lodging."], ["rations"], [], ["waste"], 1, 2, 1))
-        proposals.append(("dist_outpost_01_storage", "storage_shed", "Secure Supply Lockup", "Supply yard and stockpile.", ["Extraction flow."], [main_out], ["cargo_wagons"], [], 1, 2, 2))
-        proposals.append(("dist_outpost_01_storage", "tool_repair_shed", "Grindstone Yard", "Tool sharpening hut.", ["Durable tools required."], ["iron_tools"], ["sharpened_axes" if is_logging else "honed_picks"], ["metal_filings"], 1, 1, 1))
-        proposals.append(("dist_outpost_01_overseer", "overseer_office", "Overseer Quarters", "Logistical control room.", ["State administrative mandate."], [], ["logistics_record"], [], 1, 1, 2))
-        proposals.append(("dist_outpost_01_extraction", "watch_post", "Sentry Turret", "Tall wooden guard lookout.", ["Borderlands security."], [], ["perception_guard"], [], 1, 1, 1))
+        if is_fishing:
+            main_type = "fishery"
+            main_name = "Tidal Fishery"
+            main_purpose = "Harvesting fresh catch from the surrounding waters."
+            main_reasons = ["Rich fishing grounds."]
+            main_out = "fresh_catch"
+        elif is_logging:
+            main_type = "logging_yard"
+            main_name = "Whispering Logger Yard"
+            main_purpose = "Felling prime timber logs."
+            main_reasons = ["Ancient groves."]
+            main_out = "prime_timber"
+        else:
+            main_type = "mine_entrance"
+            main_name = "Deep Stone Shaft"
+            main_purpose = "Extracting high-yield ore veins."
+            main_reasons = ["Craggy subterranean veins."]
+            main_out = "raw_ore"
+        
+        proposals.append((f"dist_{settlement_id}_extraction", main_type, main_name, main_purpose, main_reasons, [], [main_out], [], 2, 2, 2))
+        proposals.append((f"dist_{settlement_id}_worker_camp", "worker_bunkhouse", "Laborer Bunkhouse", "Bunks for extraction crew.", ["Worker lodging."], ["rations"], [], ["waste"], 1, 2, 1))
+        proposals.append((f"dist_{settlement_id}_storage", "storage_shed", "Secure Supply Lockup", "Supply yard and stockpile.", ["Extraction flow."], [main_out], ["cargo_wagons"], [], 1, 2, 2))
+        proposals.append((f"dist_{settlement_id}_storage", "tool_repair_shed", "Grindstone Yard", "Tool sharpening hut.", ["Durable tools required."], ["iron_tools"], ["sharpened_axes" if is_logging else "honed_picks"], ["metal_filings"], 1, 1, 1))
+        proposals.append((f"dist_{settlement_id}_overseer", "overseer_office", "Overseer Quarters", "Logistical control room.", ["State administrative mandate."], [], ["logistics_record"], [], 1, 1, 2))
+        proposals.append((f"dist_{settlement_id}_extraction", "watch_post", "Sentry Turret", "Tall wooden guard lookout.", ["Borderlands security."], [], ["perception_guard"], [], 1, 1, 1))
         
     # Execute Placement Search spiral around district centers
     for p in proposals:
@@ -328,9 +407,12 @@ def generate_settlement_layout(
                     found_entrance = True
                     break
                     
-    # Generate Main Road connecting Entrance to Town Center
+    entrance_x, entrance_y = find_nearest_open_cell((entrance_x, entrance_y), occupied_mask, local_bounds)
+    center_access = find_nearest_open_cell((tx, ty), occupied_mask, local_bounds)
+
+    # Generate Main Road connecting Entrance to a walkable Town Center access cell
     center_road_path = generate_local_road_path(
-        global_width, global_height, (entrance_x, entrance_y), (tx, ty), occupied_mask, road_mask, local_bounds
+        global_width, global_height, (entrance_x, entrance_y), center_access, occupied_mask, road_mask, local_bounds
     )
     if center_road_path:
         for node in center_road_path:
@@ -347,7 +429,7 @@ def generate_settlement_layout(
         if dist["type"] == "town_center" or dist["type"] == "extraction_site":
             continue
             
-        dist_x, dist_y = dist["x"], dist["y"]
+        dist_x, dist_y = find_nearest_open_cell((dist["x"], dist["y"]), occupied_mask, local_bounds)
         # Find closest point already on the road
         road_coords = np.argwhere(road_mask)
         if len(road_coords) > 0:
@@ -378,16 +460,16 @@ def generate_settlement_layout(
     # Connect any public buildings not adjacent to roads
     for bld in buildings:
         if bld["public_access"]:
-            bx, by = bld["x"], bld["y"]
             road_coords = np.argwhere(road_mask)
             if len(road_coords) > 0:
                 road_coords_list = [(int(c[1]), int(c[0])) for c in road_coords]
-                road_coords_list.sort(key=lambda coord: abs(coord[0] - bx) + abs(coord[1] - by))
+                road_coords_list.sort(key=lambda coord: abs(coord[0] - bld["x"]) + abs(coord[1] - bld["y"]))
                 closest_road = road_coords_list[0]
+                access_cell = find_building_access_cell(bld, occupied_mask, local_bounds, closest_road)
                 
                 # Draw small connector footpath path
                 footpath = generate_local_road_path(
-                    global_width, global_height, closest_road, (bx, by), occupied_mask, road_mask, local_bounds
+                    global_width, global_height, closest_road, access_cell, occupied_mask, road_mask, local_bounds
                 )
                 if footpath:
                     for node in footpath:

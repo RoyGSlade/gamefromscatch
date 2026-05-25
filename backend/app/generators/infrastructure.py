@@ -2,7 +2,7 @@ import heapq
 import numpy as np
 from typing import List, Dict, Tuple, Any
 from .noise import seed_from_string
-from .settlements import LAND_PREFIXES, LAND_SUFFIXES
+from .settlements import LAND_PREFIXES, LAND_SUFFIXES, SETTLEMENT_TIERS
 
 def get_travel_cost(
     fx: int, fy: int, tx: int, ty: int,
@@ -147,6 +147,82 @@ def astar(
     # Absolute fallback: empty list instead of fake direct line
     return []
 
+
+def _classify_road_type(s1_type: str, s2_type: str) -> str:
+    """Determine road hierarchy type based on endpoint settlement tiers."""
+    tier1 = SETTLEMENT_TIERS.get(s1_type, 1)
+    tier2 = SETTLEMENT_TIERS.get(s2_type, 1)
+    max_tier = max(tier1, tier2)
+    min_tier = min(tier1, tier2)
+    
+    if max_tier >= 3 and min_tier >= 2:
+        return "highway"
+    elif max_tier >= 2:
+        return "trade_road"
+    else:
+        return "dirt_road"
+
+
+def _compute_route_status(road_path, water_type):
+    """Determine route operational status from path cells."""
+    if not road_path:
+        return "blocked"
+    for node in road_path:
+        if water_type[node["y"], node["x"]] == "ocean":
+            return "requires_ferry"
+    return "active"
+
+
+def _build_delaunay_edges(settlements: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
+    """
+    Compute Delaunay triangulation edges from settlement positions.
+    Falls back to minimum spanning tree-style nearest-neighbor if <3 settlements.
+    """
+    n = len(settlements)
+    if n < 2:
+        return []
+    
+    if n == 2:
+        return [(0, 1)]
+    
+    try:
+        from scipy.spatial import Delaunay
+        points = np.array([[s["x"], s["y"]] for s in settlements], dtype=float)
+        tri = Delaunay(points)
+        
+        edges = set()
+        for simplex in tri.simplices:
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    a, b = simplex[i], simplex[j]
+                    edges.add((min(a, b), max(a, b)))
+        
+        return list(edges)
+    except Exception:
+        # Fallback: connect each settlement to its nearest unconnected neighbor
+        edges = []
+        connected = {0}
+        while len(connected) < n:
+            best_dist = float("inf")
+            best_edge = None
+            for i in connected:
+                for j in range(n):
+                    if j in connected:
+                        continue
+                    d = np.hypot(
+                        settlements[i]["x"] - settlements[j]["x"],
+                        settlements[i]["y"] - settlements[j]["y"]
+                    )
+                    if d < best_dist:
+                        best_dist = d
+                        best_edge = (min(i, j), max(i, j))
+            if best_edge:
+                edges.append(best_edge)
+                connected.add(best_edge[0])
+                connected.add(best_edge[1])
+        return edges
+
+
 def generate_infrastructure(
     width: int,
     height: int,
@@ -154,142 +230,219 @@ def generate_infrastructure(
     biomes: np.ndarray,
     water_type: np.ndarray,
     river_flow: np.ndarray,
-    town: Dict[str, Any],
-    outpost: Dict[str, Any],
+    settlements: List[Dict[str, Any]],
     seed_str: str
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Generates roads, bridges, POIs, and mobile caravan/guard tokens.
+    Generates roads (via Delaunay graph), bridges, POIs, and mobile caravan/guard tokens.
+    Roads are classified into hierarchy types based on endpoint settlement tiers.
     """
     rng = np.random.default_rng(seed_from_string(seed_str))
     
-    tx, ty = town["x"], town["y"]
-    ox, oy = outpost["x"], outpost["y"]
+    # -------------------------------------------------------
+    # 1. Build Delaunay Graph and Route Roads
+    # -------------------------------------------------------
+    edges = _build_delaunay_edges(settlements)
     
-    # 1. Generate A* Road Path
-    road_path = astar(width, height, (tx, ty), (ox, oy), elevation, biomes, water_type)
-    road_name = f"{town['name']}-{outpost['name']} Trail"
+    roads = []
+    all_road_paths = []
     
-    # Assess route status
-    if not road_path:
-        route_status = "blocked"
-    elif any(water_type[node["y"], node["x"]] == "ocean" for node in road_path):
-        route_status = "requires_ferry"
-    else:
-        route_status = "active"
+    for edge_idx, (i, j) in enumerate(edges):
+        s1 = settlements[i]
+        s2 = settlements[j]
         
-    roads = [{
-        "id": "road_01",
-        "path": road_path,
-        "origin_reason": f"Established to secure trade and raw material haulage between the town of {town['name']} and the {outpost['type']} of {outpost['name']}.",
-        "route_status": route_status
-    }]
+        road_path = astar(
+            width, height,
+            (s1["x"], s1["y"]),
+            (s2["x"], s2["y"]),
+            elevation, biomes, water_type
+        )
+        
+        road_type = _classify_road_type(s1["type"], s2["type"])
+        route_status = _compute_route_status(road_path, water_type)
+        
+        road = {
+            "id": f"road_{edge_idx + 1:02d}",
+            "path": road_path,
+            "origin_reason": f"Established to secure trade and material haulage between {s1['name']} and {s2['name']}.",
+            "type": road_type,
+            "route_status": route_status,
+        }
+        roads.append(road)
+        all_road_paths.append(road_path)
     
+    # -------------------------------------------------------
     # 2. Place Bridges at River crossings
+    # -------------------------------------------------------
     bridges = []
-    bridge_counter = 0
-    for node in road_path:
-        rx, ry = node["x"], node["y"]
-        if water_type[ry, rx] == "river":
-            bridge_counter += 1
-            bridges.append({
-                "id": f"bridge_{rx}_{ry}",
-                "x": rx,
-                "y": ry,
-                "river_flow": float(river_flow[ry, rx]),
-                "origin_reason": f"Built deterministically to span the rushing currents of the local river network along the {road_name}."
-            })
-            
-    # 3. Generate simple dungeon POI
-    # Find a cell far away from both Town and Outpost in a Mountain, Hills, or Desert
+    bridge_seen = set()
+    
+    for road_idx, road in enumerate(roads):
+        road_path = road["path"]
+        road_name = road["id"]
+        
+        for node in road_path:
+            rx, ry = node["x"], node["y"]
+            if water_type[ry, rx] == "river" and (rx, ry) not in bridge_seen:
+                bridge_seen.add((rx, ry))
+                bridges.append({
+                    "id": f"bridge_{rx}_{ry}",
+                    "x": rx,
+                    "y": ry,
+                    "river_flow": float(river_flow[ry, rx]),
+                    "origin_reason": f"Built to span the river along {road_name}.",
+                })
+    
+    # -------------------------------------------------------
+    # 3. Generate Dungeon POIs (biome-specific taxonomy)
+    # -------------------------------------------------------
     pois = []
-    poi_placed = False
-    for y in range(height):
-        for x in range(width):
-            b = biomes[y, x]
-            wt = water_type[y, x]
-            dist_town = np.hypot(x - tx, y - ty)
-            dist_outpost = np.hypot(x - ox, y - oy)
-            
-            if dist_town >= 18 and dist_outpost >= 18 and wt == "none":
-                if b in ["Craggy Peaks", "Rolling Hills", "Arid Desert"]:
-                    poi_name = f"{rng.choice(LAND_PREFIXES)}'s Deep"
-                    poi_type = "dungeon"
-                    
-                    if b == "Craggy Peaks":
-                        desc = "A high-altitude craggy stone fissure serving as an ancient monster den."
-                    elif b == "Arid Desert":
-                        desc = "A long-abandoned sun-bleached desert crypt harboring ancient secrets."
-                    else:
-                        desc = "An overgrown cavern system rumored to be infested by aggressive hill beasts."
-                        
-                    pois.append({
-                        "id": "poi_01",
-                        "name": poi_name,
-                        "x": x,
-                        "y": y,
-                        "type": poi_type,
-                        "description": desc,
-                        "origin_reason": f"A geological formation appropriate for the {b.lower()} biome, now serving as a den of danger."
-                    })
-                    poi_placed = True
-                    break
-        if poi_placed:
-            break
-            
-    if not poi_placed:
-        # Fallback POI
+    poi_count = 0
+    
+    # Settlement positions for distance checks
+    settlement_coords = [(s["x"], s["y"]) for s in settlements]
+    
+    # Dungeon taxonomy by biome
+    dungeon_biomes = {
+        "Craggy Peaks": ("mountain_warren", "A high-altitude craggy stone fissure serving as an ancient monster den."),
+        "Frozen Peaks": ("frozen_lair", "A frost-rimmed cavern deep beneath the frozen peaks, home to ancient ice beasts."),
+        "Rolling Hills": ("hill_cave", "An overgrown cavern system rumored to be infested by aggressive hill beasts."),
+        "Arid Desert": ("desert_crypt", "A long-abandoned sun-bleached desert crypt harboring ancient secrets."),
+        "Murky Swamp": ("swamp_crypt", "A half-submerged crypt seeping with toxic miasma and undead guardians."),
+        "Dense Forest": ("bandit_camp", "A fortified forest clearing used as a base by a notorious bandit clan."),
+    }
+    
+    for biome_name, (poi_subtype, description) in dungeon_biomes.items():
+        placed = False
+        for y in range(height):
+            for x in range(width):
+                if biomes[y, x] != biome_name or water_type[y, x] != "none":
+                    continue
+                
+                # Must be far from all settlements
+                min_dist = min(np.hypot(x - sx, y - sy) for sx, sy in settlement_coords)
+                if min_dist < 18:
+                    continue
+                
+                poi_count += 1
+                poi_name = f"{rng.choice(LAND_PREFIXES)}'s {rng.choice(['Deep', 'Hollow', 'Maw', 'Tomb', 'Den'])}"
+                pois.append({
+                    "id": f"poi_{poi_count:02d}",
+                    "name": poi_name,
+                    "x": x,
+                    "y": y,
+                    "type": "dungeon",
+                    "description": description,
+                    "origin_reason": f"A geological formation in the {biome_name.lower()} biome, now serving as a {poi_subtype.replace('_', ' ')}.",
+                })
+                placed = True
+                break
+            if placed:
+                break
+    
+    # Fallback if no POIs placed at all
+    if not pois:
+        cx = (settlements[0]["x"] + settlements[-1]["x"]) // 2 + 10
+        cy = (settlements[0]["y"] + settlements[-1]["y"]) // 2 + 10
+        cx = min(cx, width - 1)
+        cy = min(cy, height - 1)
         pois.append({
             "id": "poi_01",
             "name": "Ruined Keep",
-            "x": (tx + ox) // 2 + 10,
-            "y": (ty + oy) // 2 + 10,
+            "x": cx,
+            "y": cy,
             "type": "dungeon",
             "description": "An abandoned stone lookout tower built during the old border wars.",
-            "origin_reason": "Built as an ancient border watchtower before falling into ruin."
+            "origin_reason": "Built as an ancient border watchtower before falling into ruin.",
         })
-        
-    # 4. Mobile Caravan Token
-    # Route: goes from Town along the road to Outpost, then back.
-    caravan_route = list(road_path)
-    # Append reversed path to form a complete back-and-forth loop
-    caravan_route_loop = caravan_route + list(reversed(road_path))[1:-1]
     
-    cargo_type = "Timber" if "logging" in outpost["type"] else "Iron Ore"
-    
+    # -------------------------------------------------------
+    # 4. Mobile Tokens (Caravans and Patrols)
+    # -------------------------------------------------------
     mobile_tokens = []
-    mobile_tokens.append({
-        "id": "caravan_01",
-        "name": f"{town['name']} Merchant Supply",
-        "type": "caravan",
-        "route": caravan_route_loop,
-        "cargo": cargo_type,
-        "origin": outpost["id"]
-    })
+    token_count = 0
     
-    # 5. Guard Patrol Token
-    # Loop around the Town cell in a 5-step patrol path or circular path on land
-    patrol_route = []
-    # Let's search a 4-step loop adjacent to Town:
-    # Town -> North -> East -> South -> West -> Town
-    p_offsets = [(0, 0), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 0), (0, 0)]
-    for dx, dy in p_offsets:
-        px, py = tx + dx, ty + dy
-        if 0 <= px < width and 0 <= py < height:
-            if elevation[py, px] >= 0.45:  # land only
-                patrol_route.append({"x": px, "y": py})
-                
-    if len(patrol_route) < 3:
-        # Fallback patrol: along first 4 road cells
-        patrol_route = road_path[:4] + list(reversed(road_path[:4]))[1:-1]
+    # Create a caravan for each road that connects a capital/town to an outpost
+    for road_idx, road in enumerate(roads):
+        road_path = road["path"]
+        if len(road_path) < 2:
+            continue
         
-    mobile_tokens.append({
-        "id": "patrol_01",
-        "name": f"{town['name']} Perimeter Guard",
-        "type": "patrol",
-        "route": patrol_route,
-        "cargo": None,
-        "origin": town["id"]
-    })
+        i, j = edges[road_idx]
+        s1 = settlements[i]
+        s2 = settlements[j]
+        
+        # Only create caravans between settlements of different tiers
+        t1 = SETTLEMENT_TIERS.get(s1["type"], 1)
+        t2 = SETTLEMENT_TIERS.get(s2["type"], 1)
+        
+        if t1 == t2 and t1 == 1:
+            continue  # skip outpost-to-outpost
+        
+        # The caravan goes from the higher-tier settlement to lower and back
+        if t1 >= t2:
+            origin_s = s1
+            dest_s = s2
+        else:
+            origin_s = s2
+            dest_s = s1
+            road_path = list(reversed(road_path))
+        
+        caravan_route_loop = road_path + list(reversed(road_path))[1:-1]
+        
+        # Determine cargo based on destination outpost resources
+        cargo_type = dest_s["resources"][0] if dest_s["resources"] else "Goods"
+        cargo_manifest = {}
+        for res in dest_s["resources"]:
+            cargo_manifest[res] = int(rng.integers(20, 80))
+        
+        token_count += 1
+        mobile_tokens.append({
+            "id": f"caravan_{token_count:02d}",
+            "name": f"{origin_s['name']} Merchant Supply",
+            "type": "caravan",
+            "route": caravan_route_loop,
+            "cargo": cargo_type,
+            "cargo_manifest": cargo_manifest,
+            "movement_state": "moving",
+            "origin": origin_s["id"],
+        })
+    
+    # Create a patrol for each capital/town
+    patrol_count = 0
+    for s in settlements:
+        if s["type"] not in ("capital", "town"):
+            continue
+        
+        patrol_count += 1
+        sx, sy = s["x"], s["y"]
+        
+        # Build a patrol loop around the settlement
+        patrol_route = []
+        p_offsets = [(0, 0), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 0), (0, 0)]
+        for dx, dy in p_offsets:
+            px, py = sx + dx, sy + dy
+            if 0 <= px < width and 0 <= py < height:
+                if elevation[py, px] >= 0.45:
+                    patrol_route.append({"x": px, "y": py})
+        
+        if len(patrol_route) < 3:
+            # Fallback: use first road's initial cells
+            if roads and roads[0]["path"]:
+                rp = roads[0]["path"]
+                patrol_route = rp[:4] + list(reversed(rp[:4]))[1:-1]
+            else:
+                patrol_route = [{"x": sx, "y": sy}, {"x": min(sx + 1, width - 1), "y": sy}, {"x": sx, "y": sy}]
+        
+        mobile_tokens.append({
+            "id": f"patrol_{patrol_count:02d}",
+            "name": f"{s['name']} Perimeter Guard",
+            "type": "patrol",
+            "route": patrol_route,
+            "cargo": None,
+            "cargo_manifest": None,
+            "movement_state": "moving",
+            "origin": s["id"],
+        })
     
     return roads, bridges, pois, mobile_tokens

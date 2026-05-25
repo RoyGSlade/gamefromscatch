@@ -12,12 +12,11 @@
     <link rel="stylesheet" href="index.css">
 </head>
 <body>
+    <div id="nightOverlay"></div>
+
     <!-- Main Interactive Map Viewport -->
     <canvas id="mapCanvas"></canvas>
     
-    <!-- Day/Night Overlay Tint -->
-    <div id="nightOverlay"></div>
-
     <!-- Floating Top Logo Bar -->
     <header class="logo-bar">
         <h1 class="fantasy-title">Chronicles of Eldoria</h1>
@@ -37,20 +36,6 @@
                 <label for="worldSeed">Realm Seed</label>
                 <input type="text" id="worldSeed" value="Eldoria" placeholder="Enter custom seed...">
             </div>
-            
-            <div class="control-row">
-                <div class="control-group half">
-                    <label for="countriesCount">Kingdoms</label>
-                    <input type="range" id="countriesCount" min="2" max="8" value="6" step="1">
-                    <span class="range-val" id="countriesVal">6</span>
-                </div>
-                <div class="control-group half">
-                    <label for="citiesCount">Settlements</label>
-                    <input type="range" id="citiesCount" min="10" max="64" value="32" step="2">
-                    <span class="range-val" id="citiesVal">32</span>
-                </div>
-            </div>
-
             <button class="btn btn-primary" id="regenerateBtn">Weave New World</button>
         </div>
 
@@ -67,16 +52,24 @@
                 <label for="poiDebugToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show POIs (Debug)</label>
             </div>
             <div class="control-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
-                <input type="checkbox" id="districtsToggle" checked style="width: auto; margin: 0;">
-                <label for="districtsToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Districts</label>
+                <input type="checkbox" id="districtsToggle" style="width: auto; margin: 0;">
+                <label for="districtsToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Districts (Debug)</label>
+            </div>
+            <div class="control-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="districtLabelsToggle" style="width: auto; margin: 0;">
+                <label for="districtLabelsToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show District Labels (Debug)</label>
             </div>
             <div class="control-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
                 <input type="checkbox" id="productionToggle" style="width: auto; margin: 0;">
-                <label for="productionToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Production Chains</label>
+                <label for="productionToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Production Chains (Debug)</label>
             </div>
             <div class="control-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
                 <input type="checkbox" id="jobsToggle" style="width: auto; margin: 0;">
-                <label for="jobsToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Job Slots</label>
+                <label for="jobsToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Job Slots (Debug)</label>
+            </div>
+            <div class="control-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="tokenRoutesToggle" style="width: auto; margin: 0;">
+                <label for="tokenRoutesToggle" style="margin: 0; cursor: pointer; color: var(--gold); font-size: 0.85rem;">Show Token Routes (Debug)</label>
             </div>
         </div>
 
@@ -99,17 +92,16 @@
                 <p>💡 Click on any city node or double-click to fly in and survey its streets.</p>
             </div>
         </div>
+    </aside>
 
-        <!-- LLM / RPG Interaction Panel -->
-        <div id="interactionPanel" class="interaction-panel">
-            <h4 style="font-family:var(--font-serif); color:var(--gold); font-size:0.9rem;">NPC Interaction</h4>
-            <div id="interactionLog" class="interaction-log">
-                <!-- Log entries added here via JS -->
-            </div>
-            <div class="interaction-input-group">
-                <input type="text" id="actionInput" placeholder="What do you want to do/say?">
-                <button class="btn btn-primary" id="actionBtn">Act</button>
-            </div>
+    <!-- Local AI Interaction Panel -->
+    <aside class="interaction-panel" id="interactionPanel">
+        <button class="btn-close" id="closeInteractionBtn">&times;</button>
+        <h2 class="section-title">Local Action</h2>
+        <div id="interactionLog" class="interaction-log"></div>
+        <div class="interaction-input-row">
+            <input type="text" id="actionInput" placeholder="I look for the innkeeper...">
+            <button class="btn btn-primary" id="actionBtn">Act</button>
         </div>
     </aside>
 
@@ -132,7 +124,7 @@
             <span class="status-value" id="coordsValue">0, 0</span>
         </div>
         <div class="status-item instruction">
-            <span class="status-value">🖱️ Scroll Wheel: Zoom | Drag: Pan | Click City: Inspect</span>
+            <span class="status-value">Scroll: Zoom | Drag: Pan | Click Terrain: Travel Turn | Click Building: Inspect</span>
         </div>
     </footer>
 

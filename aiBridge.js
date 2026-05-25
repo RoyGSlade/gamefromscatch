@@ -1,174 +1,195 @@
 /**
- * aiBridge.js - Local LLM & RPG Interaction Hook
- * Generates JSON payloads for Local LLMs to understand the RPG state.
- * Contains a mock parser to demonstrate Intent parsing and consequence triggering.
+ * aiBridge.js - Local LLM context packaging and mock response routing.
  */
 
+function safeList(value) {
+    return Array.isArray(value) ? value : [];
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function deterministicRoll(seedText) {
+    let hash = 0;
+    for (let i = 0; i < seedText.length; i++) {
+        hash = ((hash << 5) - hash + seedText.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash % 20) + 1;
+}
+
 export class AIBridge {
-    constructor(player, simulation, worldMap) {
+    constructor({ player, simulation, world }) {
         this.player = player;
-        this.sim = simulation;
-        this.world = worldMap;
-        
-        // UI
+        this.simulation = simulation;
+        this.world = world;
+        this.currentBuilding = null;
+        this.currentSettlement = null;
+        this.currentLayout = null;
+
         this.panel = document.getElementById('interactionPanel');
         this.logArea = document.getElementById('interactionLog');
         this.actionInput = document.getElementById('actionInput');
         this.actionBtn = document.getElementById('actionBtn');
-        
-        this.currentBuilding = null;
-        this.currentCity = null;
-        
-        if (this.actionBtn) {
-            this.actionBtn.addEventListener('click', () => this.handlePlayerAction());
-        }
-        if (this.actionInput) {
-            this.actionInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') this.handlePlayerAction();
-            });
-        }
+        this.closeBtn = document.getElementById('closeInteractionBtn');
+
+        this.actionBtn?.addEventListener('click', () => this.handlePlayerAction());
+        this.closeBtn?.addEventListener('click', () => this.closeInteraction());
+        this.actionInput?.addEventListener('keydown', event => {
+            if (event.key === 'Enter') this.handlePlayerAction();
+        });
     }
 
-    openInteraction(city, building) {
-        this.currentCity = city;
+    openInteraction(settlement, building, layout) {
+        this.currentSettlement = settlement;
         this.currentBuilding = building;
-        
-        // Show panel
-        if (this.panel) this.panel.classList.add('active');
-        if (this.logArea) this.logArea.innerHTML = '';
-        
-        // Check if locked
-        if (this.sim.isNight() && building.lockedAtNight) {
-            this.logSystem(`The ${building.purpose} door is locked and bolted for the night.`);
-            if (this.actionInput) this.actionInput.disabled = true;
-            if (this.actionBtn) this.actionBtn.disabled = true;
-            return;
-        }
+        this.currentLayout = layout;
 
+        if (!this.panel || !this.logArea) return;
+
+        this.panel.classList.add('open');
+        this.logArea.innerHTML = '';
+
+        const locked = this.simulation.isNight() && building.locked_at_night;
         if (this.actionInput) {
-            this.actionInput.disabled = false;
+            this.actionInput.disabled = locked;
             this.actionInput.value = '';
-            this.actionInput.focus();
         }
-        if (this.actionBtn) this.actionBtn.disabled = false;
+        if (this.actionBtn) {
+            this.actionBtn.disabled = locked;
+        }
 
-        // Generate Context Payload for LLM
-        const contextPayload = this.generateStatePayload();
-        console.log("LLM Context Payload generated:", JSON.stringify(contextPayload, null, 2));
-        
-        this.logSystem(`Entered ${building.purpose} in the ${building.district} district.`);
-        this.logNPC(`Welcome to my ${building.purpose.toLowerCase()}. What do you need?`);
+        const payload = this.generateStatePayload();
+        console.info('LLM Context Payload generated:', JSON.stringify(payload, null, 2));
+
+        this.logSystem(`Entered ${building.name}.`);
+        if (locked) {
+            this.logSystem('The building is locked for the night.');
+        } else {
+            this.logNPC(`You are in ${building.purpose || building.type}. What do you do?`);
+            this.actionInput?.focus();
+        }
     }
 
     closeInteraction() {
-        if (this.panel) this.panel.classList.remove('active');
+        this.panel?.classList.remove('open');
         this.currentBuilding = null;
+        this.currentSettlement = null;
+        this.currentLayout = null;
     }
 
-    generateStatePayload() {
+    generateStatePayload(actionText = null) {
+        const building = this.currentBuilding || {};
+        const settlement = this.currentSettlement || {};
+        const layout = this.currentLayout || {};
+        const jobs = safeList(layout.job_slots).filter(job => safeList(building.job_slots).includes(job.id));
+        const maxEmployees = jobs.reduce((sum, job) => sum + (job.count || 0), 0);
+        const cell = this.world.cells?.[building.y * this.world.width + building.x] || null;
+
         return {
-            "world": {
-                "time": this.sim.timeOfDay.toFixed(2),
-                "phase": this.sim.getPhaseName(),
-                "city": this.currentCity.name,
-                "ruler": this.currentCity.ruler
+            world_state: {
+                current_turn: this.simulation.currentTurn,
+                time_string: this.simulation.getTimeString(),
+                phase: this.simulation.getPhaseName()
             },
-            "player": {
-                "level": this.player.level,
-                "reputation": this.player.reputation,
-                "passivePerception": this.player.passivePerception
+            player: {
+                level: this.player.level,
+                reputation: this.player.reputation,
+                passivePerception: this.player.passivePerception,
+                position: { x: this.player.cellX, y: this.player.cellY }
             },
-            "npc": {
-                "id": this.currentBuilding.npcSeed,
-                "location": this.currentBuilding.purpose,
-                "tier": this.currentBuilding.tier,
-                "priceModifier": this.currentBuilding.priceMod
+            local_environment: {
+                settlement_id: settlement.id,
+                settlement_name: settlement.name,
+                settlement_type: settlement.type,
+                biome: cell?.biome ?? 'Unknown',
+                water_type: cell?.water_type ?? 'none',
+                resources: cell?.resources ?? []
             },
-            "prompt": "You are the NPC defined above. Respond to the player's action in character."
+            target_building: {
+                id: building.id,
+                name: building.name,
+                purpose: building.purpose || building.type,
+                type: building.type,
+                tier: building.tier,
+                max_employees: maxEmployees,
+                max_residents: building.max_residents ?? 0,
+                current_occupants: building.current_occupants ?? [],
+                inventory_tier_cap: building.inventory_tier_cap ?? building.tier,
+                storage_volume_limit: building.storage_volume_limit ?? 0,
+                price_modifier: building.price_modifier ?? 1,
+                locked_status: this.simulation.isNight() && !!building.locked_at_night,
+                obscurity_rating: building.obscurity_rating ?? 0,
+                requires: safeList(building.requires),
+                produces: safeList(building.produces),
+                consumes: safeList(building.consumes)
+            },
+            action: actionText,
+            expected_output_type: 'json'
         };
     }
 
     handlePlayerAction() {
-        if (!this.actionInput) return;
-        const actionText = this.actionInput.value.trim();
+        const actionText = this.actionInput?.value.trim();
         if (!actionText) return;
-        
+
         this.logPlayer(actionText);
         this.actionInput.value = '';
 
-        // Generate Player Action Payload
-        const actionPayload = {
-            "action": actionText,
-            "expectedOutputType": "json",
-            "schema": {
-                "dialogue": "string",
-                "intent": "enum: [trade, combat, threaten, info, leave]",
-                "reputationChange": "number"
-            }
-        };
-        console.log("Sending to LLM:", JSON.stringify(actionPayload, null, 2));
+        const payload = this.generateStatePayload(actionText);
+        console.info('Sending to local model:', JSON.stringify(payload, null, 2));
 
-        // MOCK LLM PARSER
-        setTimeout(() => this.mockLLMResponse(actionText), 600);
+        this.simulation.advanceTurn('interaction', 1, {
+            building_id: this.currentBuilding?.id,
+            action: actionText
+        });
+        this.mockLLMResponse(actionText);
     }
 
     mockLLMResponse(text) {
         const lower = text.toLowerCase();
-        let intent = "info";
-        let dialogue = "I'm just a humble worker. What can I tell you?";
-        let repChange = 0;
+        let dialogue = 'The room settles as your action is considered.';
 
-        if (lower.includes('threat') || lower.includes('kill') || lower.includes('rob')) {
-            intent = "threaten";
-            dialogue = "Guards! Help! We have a bandit!";
-            repChange = -15;
-        } else if (lower.includes('buy') || lower.includes('trade') || lower.includes('shop')) {
-            intent = "trade";
-            dialogue = `Take a look at my wares. Since you look decent, I'll only charge ${this.currentBuilding.priceMod.toFixed(1)}x normal prices.`;
+        if (lower.includes('buy') || lower.includes('trade') || lower.includes('shop')) {
+            const price = (this.currentBuilding?.price_modifier ?? 1).toFixed(2);
+            dialogue = `Standard prices are currently running at ${price}x.`;
+        } else if (lower.includes('threat') || lower.includes('rob')) {
+            const roll = deterministicRoll(`${text}:${this.simulation.currentTurn}:${this.currentBuilding?.id}`);
+            dialogue = roll >= 13
+                ? `The pressure works. The local staff back down after a roll of ${roll}.`
+                : `The attempt fails on a roll of ${roll}. Guards will hear about this.`;
+            if (roll < 13) this.player.reputation -= 5;
         } else if (lower.includes('leave') || lower.includes('bye')) {
-            intent = "leave";
-            dialogue = "Safe travels on the roads.";
+            dialogue = 'You step back from the conversation.';
+            window.setTimeout(() => this.closeInteraction(), 600);
         }
 
-        // Apply Consequences
         this.logNPC(dialogue);
-        
-        if (repChange !== 0) {
-            this.player.reputation += repChange;
-            this.logSystem(`Reputation changed by ${repChange}. Current: ${this.player.reputation}`);
-        }
-
-        if (intent === 'threaten') {
-            this.logSystem("🎲 [Intimidation Roll Required]");
-            const roll = Math.floor(Math.random() * 20) + 1;
-            this.logSystem(`🎲 You rolled a ${roll}!`);
-            if (roll > 12) {
-                this.logSystem("Success! The NPC cowers and hands over 50 gold.");
-            } else {
-                this.logSystem("Failure! The city guards have been alerted!");
-            }
-        }
-
-        if (intent === 'leave') {
-            setTimeout(() => this.closeInteraction(), 1500);
-        }
     }
 
-    logSystem(msg) {
-        this.appendLog(`<span class="log-entry system">[System] ${msg}</span>`);
+    logSystem(message) {
+        this.appendLog('system', `[System] ${message}`);
     }
 
-    logPlayer(msg) {
-        this.appendLog(`<span class="log-entry player">You: ${msg}</span>`);
+    logPlayer(message) {
+        this.appendLog('player', `You: ${message}`);
     }
 
-    logNPC(msg) {
-        this.appendLog(`<span class="log-entry npc">NPC: "${msg}"</span>`);
+    logNPC(message) {
+        this.appendLog('npc', `NPC: "${message}"`);
     }
 
-    appendLog(html) {
+    appendLog(type, message) {
         if (!this.logArea) return;
-        this.logArea.innerHTML += html;
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${type}`;
+        entry.innerHTML = escapeHtml(message);
+        this.logArea.appendChild(entry);
         this.logArea.scrollTop = this.logArea.scrollHeight;
     }
 }
